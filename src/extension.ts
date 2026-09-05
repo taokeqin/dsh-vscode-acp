@@ -109,6 +109,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('dshAgent.focus', () =>
       vscode.commands.executeCommand('dshAgent.sessions.focus'),
     ),
+    vscode.commands.registerCommand('dshAgent.openLast', requireRoot(() => sessions!.openLast())),
     vscode.commands.registerCommand('dshAgent.newSession', requireRoot(() => sessions!.newSession())),
     vscode.commands.registerCommand('dshAgent.refreshSessions', () => void sessions?.refresh()),
     vscode.commands.registerCommand('dshAgent.pickModel', requireRoot(async () => {

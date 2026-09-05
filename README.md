@@ -38,6 +38,19 @@ elicitation". That boundary is real and permanent, not a gap to be filled later.
 
 Transcript replay is recovered separately — see below.
 
+## Opening a session
+
+The whale in the editor title bar is **DSH: Open** — the same placement Claude Code
+uses for its own (`editor/title`, `navigation` group). One click reveals the visible
+session tab, else any open tab, else reopens the most recent session for the
+workspace, else starts a fresh one.
+
+Title-bar icons are rendered as images rather than masked like container icons, so
+`currentColor` would resolve to black and disappear on dark themes. The title icon
+therefore carries a fixed brand blue that reads on both — the same trick Claude
+Code's orange logo relies on. The container icon keeps `currentColor`, since VS Code
+masks and themes that one.
+
 ## Transcript replay (best effort, `dshAgent.replayHistory`)
 
 `session/resume` restores the agent's context but replays nothing, so a resumed

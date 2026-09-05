@@ -44,6 +44,14 @@
     },
     "commands": [
       {
+        "command": "dshAgent.openLast",
+        "title": "DSH: Open",
+        "icon": {
+          "light": "media/whale-title.svg",
+          "dark": "media/whale-title.svg"
+        }
+      },
+      {
         "command": "dshAgent.focus",
         "title": "DSH: Focus Sessions"
       },
@@ -105,6 +113,12 @@
           "command": "dshAgent.sendSelection",
           "when": "editorHasSelection",
           "group": "9_dsh"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "dshAgent.openLast",
+          "group": "navigation"
         }
       ]
     },

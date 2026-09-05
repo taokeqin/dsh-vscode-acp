@@ -165,6 +165,41 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
     this.metaCache.delete(sessionId);
   }
 
+  /**
+   * The "DSH: Open" entry point, mirroring Claude Code's `editor.openLast`.
+   *
+   * Reveals a session tab if one is already open, otherwise reopens the most recent
+   * session for this workspace, otherwise starts a fresh one — so the title-bar
+   * icon always does something sensible on one click.
+   */
+  async openLast(): Promise<void> {
+    const active = ChatPanel.activeSessionId();
+    if (active !== null) {
+      ChatPanel.get(active)?.reveal();
+      return;
+    }
+    const openIds = ChatPanel.openSessionIds();
+    if (openIds.length > 0) {
+      ChatPanel.get(openIds[0])?.reveal();
+      return;
+    }
+    let candidates: SessionMeta[] = [];
+    try {
+      const ids = listSessionIdsOnDisk(this.dshHome(), this.workspaceRoot);
+      const metas = await Promise.all(ids.map((id) => this.metaFor(id)));
+      candidates = metas
+        .filter((m) => m.delegationDepth === null || m.delegationDepth === 0)
+        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    } catch (err) {
+      this.log(`[sessions] openLast scan failed: ${String(err)}`);
+    }
+    if (candidates.length > 0) {
+      await this.openSession(candidates[0].sessionId);
+      return;
+    }
+    await this.newSession();
+  }
+
   /** Creates a session and opens it in a new editor tab. */
   async newSession(): Promise<void> {
     try {
