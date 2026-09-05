@@ -53,21 +53,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const cwd = root ?? process.cwd();
   const cfg = vscode.workspace.getConfiguration('dshAgent');
 
-  /**
-   * Drives the `when` clause on the activity-bar container.
-   *
-   * The list lives in the secondary (right) sidebar by default so the left bar stays
-   * free for file navigation; the left copy is opt-in. The key must be set before
-   * any view resolves, which is why this extension activates onStartupFinished —
-   * otherwise enabling the setting would not surface the container until something
-   * else happened to activate us.
-   */
-  const applyActivityBarVisibility = (): void => {
-    const show = vscode.workspace.getConfiguration('dshAgent').get<boolean>('showInActivityBar', false);
-    void vscode.commands.executeCommand('setContext', 'dshAgent.showInActivityBar', show);
-  };
-  applyActivityBarVisibility();
-
   connection = new AcpConnection({
     command: cfg.get<string>('executablePath', 'dsh'),
     profile: cfg.get<string>('profile', 'acp'),
@@ -96,26 +81,11 @@ export function activate(context: vscode.ExtensionContext): void {
     return id === null ? undefined : ChatPanel.get(id);
   };
 
-  /**
-   * Focuses the session list, preferring the secondary (right) sidebar.
-   *
-   * VS Code generates `<viewId>.focus` for every declared view; the secondary one
-   * only exists where the host supports a secondary sidebar, so fall back to the
-   * activity-bar copy when that command is absent.
-   */
-  const focusSessions = async (preferRight: boolean): Promise<void> => {
-    const commands = await vscode.commands.getCommands(true);
-    const right = 'dshAgent.sessionsSecondary.focus';
-    const left = 'dshAgent.sessions.focus';
-    const target = preferRight && commands.includes(right) ? right : left;
-    await vscode.commands.executeCommand(target);
-  };
-
   context.subscriptions.push(
-    // One provider, two mount points: the list can live on the left, the right, or
-    // both at once, and a single refresh updates every mounted copy.
-    vscode.window.registerWebviewViewProvider('dshAgent.sessions', sessions),
-    vscode.window.registerWebviewViewProvider('dshAgent.sessionsSecondary', sessions),
+    // The list is declared only in the secondary (right) sidebar, so the left rail
+    // stays free for file navigation. VS Code lets a view be dragged between
+    // sidebars natively, which is why no setting is needed to move it.
+    vscode.window.registerWebviewViewProvider('dshAgent.sessions', sessions!),
 
     // Restores session tabs after a window reload; the webview persisted its
     // sessionId via setState, and each restored tab resumes that session.
@@ -136,8 +106,9 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     }),
 
-    vscode.commands.registerCommand('dshAgent.focus', () => focusSessions(true)),
-    vscode.commands.registerCommand('dshAgent.focusSecondary', () => focusSessions(true)),
+    vscode.commands.registerCommand('dshAgent.focus', () =>
+      vscode.commands.executeCommand('dshAgent.sessions.focus'),
+    ),
     vscode.commands.registerCommand('dshAgent.newSession', requireRoot(() => sessions!.newSession())),
     vscode.commands.registerCommand('dshAgent.refreshSessions', () => void sessions?.refresh()),
     vscode.commands.registerCommand('dshAgent.pickModel', requireRoot(async () => {
@@ -183,10 +154,6 @@ export function activate(context: vscode.ExtensionContext): void {
       void sessions?.refresh();
       void vscode.window.showInformationMessage('DSH: agent stopped. Open a session to restart it.');
     })),
-
-    vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('dshAgent.showInActivityBar')) applyActivityBarVisibility();
-    }),
 
     { dispose: () => void connection?.dispose() },
   );

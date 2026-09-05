@@ -63,10 +63,10 @@ restored tab resumes that session.
 The session list is a launcher, not a transcript. Sessions with an open tab are
 marked, and the visible tab is highlighted, so it doubles as an overview.
 
-It lives in the **secondary (right) sidebar** by default, matching where Claude Code
-puts its own view and leaving the left activity bar to file navigation. Set
-`dshAgent.showInActivityBar` to also mount it on the left; a single provider serves
-both view ids, so either side (or both at once) stays in sync from one refresh.
+It is declared **only** in the secondary (right) sidebar, matching where Claude Code
+puts its own view and leaving the left activity bar to file navigation. There is no
+setting to move it: VS Code already lets a view be dragged between the primary and
+secondary sidebars, so a container in both places would just be clutter.
 
 Tabs open in the column beside your code (`dshAgent.panelColumn`, `Beside` or
 `Active`). Files opened from a tool row go to column One, so code lands next to the

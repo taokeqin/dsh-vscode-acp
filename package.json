@@ -2,7 +2,7 @@
   "name": "dsh-agent",
   "displayName": "DSH Agent",
   "description": "Chat with the DeepSeek Harness coding agent inside VS Code over ACP (Agent Client Protocol). Unofficial.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "local",
   "private": true,
   "license": "MIT",
@@ -20,24 +20,14 @@
     }
   },
   "activationEvents": [
-    "onStartupFinished",
     "onView:dshAgent.sessions",
-    "onView:dshAgent.sessionsSecondary",
     "onWebviewPanel:dshAgent.chatPanel"
   ],
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "dshAgent",
-          "title": "DSH",
-          "icon": "media/icon.svg",
-          "when": "dshAgent.showInActivityBar"
-        }
-      ],
       "secondarySidebar": [
         {
-          "id": "dshAgent-secondary",
+          "id": "dshAgent",
           "title": "DSH",
           "icon": "media/icon.svg"
         }
@@ -47,13 +37,6 @@
       "dshAgent": [
         {
           "id": "dshAgent.sessions",
-          "name": "Sessions",
-          "type": "webview"
-        }
-      ],
-      "dshAgent-secondary": [
-        {
-          "id": "dshAgent.sessionsSecondary",
           "name": "Sessions",
           "type": "webview"
         }
@@ -97,27 +80,23 @@
         "command": "dshAgent.restart",
         "title": "DSH: Restart Agent Process",
         "icon": "$(debug-restart)"
-      },
-      {
-        "command": "dshAgent.focusSecondary",
-        "title": "DSH: Focus Sessions (Right Side)"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "dshAgent.newSession",
-          "when": "view == dshAgent.sessions || view == dshAgent.sessionsSecondary",
+          "when": "view == dshAgent.sessions",
           "group": "navigation@1"
         },
         {
           "command": "dshAgent.refreshSessions",
-          "when": "view == dshAgent.sessions || view == dshAgent.sessionsSecondary",
+          "when": "view == dshAgent.sessions",
           "group": "navigation@2"
         },
         {
           "command": "dshAgent.showLogs",
-          "when": "view == dshAgent.sessions || view == dshAgent.sessionsSecondary",
+          "when": "view == dshAgent.sessions",
           "group": "navigation@3"
         }
       ],
@@ -174,11 +153,6 @@
           ],
           "default": "Beside",
           "markdownDescription": "Where a session tab opens. `Beside` puts the chat in the column next to your code; `Active` opens it in the current column."
-        },
-        "dshAgent.showInActivityBar": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "Also show the session list in the left activity bar. Off by default: the list lives in the secondary (right) sidebar, keeping the left bar for file navigation."
         }
       }
     }
