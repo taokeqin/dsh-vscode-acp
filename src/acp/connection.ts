@@ -6,7 +6,7 @@
 // and routes session/update notifications to whoever subscribed to that id.
 import { realpathSync } from 'node:fs';
 import { AcpClient } from './client';
-import { locateDsh, notFoundMessage } from './locate';
+import { childPathFor, locateDsh, notFoundMessage } from './locate';
 import type {
   ConfigOption,
   InitializeResult,
@@ -97,10 +97,14 @@ export class AcpConnection {
     if (found === null) throw new Error(notFoundMessage(this.opts.command));
     this.opts.log(`[acp] using ${found.path} (found via ${found.via})`);
 
+    // dsh's shebang resolves `node` through the child's own PATH, so the child needs
+    // one that reaches the runtime — not the bare system PATH we inherited.
+    const childPath = childPathFor(found.path);
     const client = new AcpClient({
       command: found.path,
       args: ['--profile', this.opts.profile],
       cwd: this.opts.cwd,
+      env: { ...process.env, PATH: childPath },
       log: this.opts.log,
     });
 

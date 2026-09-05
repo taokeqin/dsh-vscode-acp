@@ -22,6 +22,8 @@ export interface AcpClientOptions {
   command: string;
   args: string[];
   cwd: string;
+  /** Environment for the child; callers must supply a PATH the agent can exec with. */
+  env?: NodeJS.ProcessEnv;
   /** Diagnostics sink (agent stderr, lifecycle, protocol errors). */
   log(line: string): void;
 }
@@ -63,6 +65,7 @@ export class AcpClient extends EventEmitter {
     this.exited = false;
     const child = spawn(this.opts.command, this.opts.args, {
       cwd: this.opts.cwd,
+      ...(this.opts.env ? { env: this.opts.env } : {}),
       stdio: ['pipe', 'pipe', 'pipe'],
       // No shell: argv is passed as an array so nothing in cwd or config is ever
       // interpreted by a shell.

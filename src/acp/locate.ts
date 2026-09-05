@@ -12,7 +12,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 /** Result of a lookup: the path plus how it was found, for logging. */
 export interface LocateResult {
@@ -125,6 +125,32 @@ export function locateDsh(configured: string, deps: LocateDeps = nodeLocateDeps(
     }
   }
   return null;
+}
+
+/**
+ * Builds the PATH the agent child needs.
+ *
+ * Finding the dsh file is only half the problem: dsh is a Node CLI whose shebang is
+ * `#!/usr/bin/env node`, so it resolves `node` through its OWN PATH at exec time.
+ * Handing it the inherited system PATH reproduces the same failure one level down —
+ * `env: node: No such file or directory`, exit 127 — because the version manager's
+ * node is no more visible to the child than dsh was to us.
+ *
+ * Prepending the directory dsh was found in normally fixes it outright: for nvm,
+ * fnm, volta and homebrew, `node` sits right next to `dsh`. When it does not (a
+ * global npm prefix separate from the runtime), the well-known directories are
+ * searched for a node as well.
+ */
+export function childPathFor(dshPath: string, deps: LocateDeps = nodeLocateDeps()): string {
+  const dshDir = dirname(dshPath);
+  const dirs = [dshDir];
+  if (!isFile(join(dshDir, 'node'), deps)) {
+    // Later entries in wellKnownDirs are newer nvm versions, so search from the end.
+    const nodeDir = [...wellKnownDirs(deps)].reverse().find((d) => isFile(join(d, 'node'), deps));
+    if (nodeDir) dirs.push(nodeDir);
+  }
+  const inherited = deps.env.PATH ?? '';
+  return [...dirs, inherited].filter((p) => p !== '').join(':');
 }
 
 /** Actionable message for the failure case, naming the setting to fix it. */

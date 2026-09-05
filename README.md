@@ -170,8 +170,20 @@ Discovery runs cheapest-first and only the last step spawns anything:
 4. the login shell's own PATH (`$SHELL -lic 'command -v dsh'`), with a 5 s timeout
 
 If all four fail, the error names `dshAgent.executablePath` and offers a button that
-opens that setting. `test/locate.mjs` covers each branch, including a simulated
-Dock-launch PATH and a login shell that hangs.
+opens that setting.
+
+**Finding the file is only half of it.** dsh is a Node CLI whose shebang is
+`#!/usr/bin/env node`, so it resolves `node` through its *own* PATH at exec time.
+Handing the child the inherited system PATH reproduces the same failure one level
+down — `env: node: No such file or directory`, exit 127 — because the version
+manager's node is no more visible to the child than dsh was to us. The child
+therefore gets the directory dsh was found in prepended to PATH (for nvm, fnm, volta
+and homebrew `node` sits right next to `dsh`), falling back to a search of the
+well-known directories for a runtime.
+
+`test/gui-launch.mjs` rebuilds the Dock-launch PATH and drives a real handshake
+through it, which is the only way to catch that second failure: locating a file says
+nothing about being able to exec it.
 
 ## Security notes
 
