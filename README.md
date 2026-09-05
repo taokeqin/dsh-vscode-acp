@@ -73,10 +73,22 @@ run several sessions at once, each independent" — and it is covered by the smo
 test: two sessions prompt concurrently on one process, settle in parallel, and
 neither sees the other's messages or tool calls.
 
-`session/list` returns only **inactive** sessions, so every session with an open tab
-is absent from it and the list merges them back in — otherwise the sidebar would
-hide exactly the sessions being worked in. Closing a tab closes the session
-agent-side, which is what makes it listable and reopenable again.
+The sidebar enumerates sessions **from disk**, not from the agent, so it renders on
+a fresh window before any process has been spawned. It merges three sources:
+
+| Source | Why |
+|---|---|
+| `<dshHome>/sessions/<slug>/` | works with no agent running |
+| `session/list` when the agent is up | authoritative for resumability |
+| sessions with an open tab | absent from `session/list`, which returns only **inactive** sessions |
+
+Delegated sub-agent runs are filtered out by `delegationDepth > 0` — the disk holds
+them alongside real conversations (3 of 28 here), and only depth 0 is something the
+user started. This is what `session/list` means by "root sessions".
+
+Closing a tab closes the session agent-side, which is required rather than tidy: an
+active session never appears in `session/list`, so one left open could never be
+reopened.
 
 Entries are labelled with the session title (dsh writes the first user message as a
 fallback title, since the acp profile disables model-generated ones) and a relative

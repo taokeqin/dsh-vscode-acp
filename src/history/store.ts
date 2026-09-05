@@ -15,7 +15,7 @@
 // caller logs it, and the panel degrades to "no history" while chat keeps working.
 // Nothing in this module may ever break a session.
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as zlib from 'node:zlib';
 
@@ -228,7 +228,7 @@ export function parseTranscript(jsonl: string, maxEntries: number): HistoryResul
   return { ok: true, entries: truncated ? entries.slice(-maxEntries) : entries, truncated, scanned };
 }
 
-/** Descriptive metadata for one persisted session, for the switcher. */
+/** Descriptive metadata for one persisted session, for the sidebar list. */
 export interface SessionMeta {
   sessionId: string;
   /** First user message, used by dsh as the fallback session title. */
@@ -236,6 +236,14 @@ export interface SessionMeta {
   createdAt: number | null;
   /** Log file mtime — the closest available proxy for last activity. */
   updatedAt: number | null;
+  /** Workspace the session was created against. */
+  cwd: string | null;
+  /**
+   * 0 for a conversation the user started; >0 for a sub-agent the agent delegated
+   * to. Only depth 0 belongs in the session list — this is what `session/list`
+   * means by "root sessions", and 3 of 28 sessions on this machine were depth 1.
+   */
+  delegationDepth: number | null;
 }
 
 /** Frames to decode when only the header and title are wanted. */
@@ -253,7 +261,9 @@ export async function loadSessionMeta(
   sessionId: string,
   cwd?: string,
 ): Promise<SessionMeta> {
-  const empty: SessionMeta = { sessionId, title: null, createdAt: null, updatedAt: null };
+  const empty: SessionMeta = {
+    sessionId, title: null, createdAt: null, updatedAt: null, cwd: null, delegationDepth: null,
+  };
   let path: string | null;
   try {
     path = findSessionLog(dshHome, sessionId, cwd);
@@ -278,15 +288,24 @@ export async function loadSessionMeta(
 
   let title: string | null = null;
   let createdAt: number | null = null;
+  let sessionCwd: string | null = null;
+  let delegationDepth: number | null = null;
   for (const line of raw.text.split('\n')) {
     if (line === '') continue;
-    let rec: { type?: string; data?: Record<string, unknown>; createdAt?: number };
+    let rec: {
+      type?: string; data?: Record<string, unknown>;
+      createdAt?: number; cwd?: string; delegationDepth?: number;
+    };
     try {
       rec = JSON.parse(line) as typeof rec;
     } catch {
       continue;
     }
-    if (rec.type === 'session' && typeof rec.createdAt === 'number') createdAt = rec.createdAt;
+    if (rec.type === 'session') {
+      if (typeof rec.createdAt === 'number') createdAt = rec.createdAt;
+      if (typeof rec.cwd === 'string') sessionCwd = rec.cwd;
+      if (typeof rec.delegationDepth === 'number') delegationDepth = rec.delegationDepth;
+    }
     if (rec.type === 'session/title') {
       const t = (rec.data as { title?: unknown } | undefined)?.title;
       if (typeof t === 'string' && t.trim() !== '') title = t.trim();
@@ -298,7 +317,41 @@ export async function loadSessionMeta(
     }
     if (title !== null && createdAt !== null) break;
   }
-  return { sessionId, title, createdAt, updatedAt };
+  return { sessionId, title, createdAt, updatedAt, cwd: sessionCwd, delegationDepth };
+}
+
+/**
+ * Enumerates persisted session ids for a workspace straight from disk.
+ *
+ * The sidebar needs this: `session/list` requires a running agent, but the list
+ * should render on a fresh window before anything has been spawned — otherwise it
+ * shows nothing and only starts working once you manually create a session.
+ *
+ * Directory layout is `<dshHome>/sessions/<slug>/<sessionId>/`. Both the literal cwd
+ * and its realpath are tried, since dsh slugs whatever cwd it was launched with.
+ * Returns ids only; callers filter delegated sub-sessions via `loadSessionMeta`.
+ */
+export function listSessionIdsOnDisk(dshHome: string, cwd: string): string[] {
+  const slugs = new Set([slugForCwd(cwd)]);
+  try {
+    slugs.add(slugForCwd(realpathSync(cwd)));
+  } catch {
+    // An unresolvable cwd just means the literal slug is the only candidate.
+  }
+  const ids = new Set<string>();
+  for (const slug of slugs) {
+    const dir = join(dshHome, 'sessions', slug);
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue; // No sessions recorded for this workspace yet.
+    }
+    for (const id of entries) {
+      if (existsSync(join(dir, id, 'session.jsonl.zstd'))) ids.add(id);
+    }
+  }
+  return [...ids];
 }
 
 /** Locates, decompresses, and parses one session's transcript. Never throws. */

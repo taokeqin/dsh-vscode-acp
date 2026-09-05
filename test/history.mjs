@@ -1,6 +1,6 @@
 // test/history.mjs — transcript recovery against real on-disk dsh session logs.
 // Asserts structure and failure behaviour only; conversation text is never printed.
-import { loadTranscript, parseTranscript, slugForCwd, loadSessionMeta } from '../out/history/store.js';
+import { loadTranscript, parseTranscript, slugForCwd, loadSessionMeta, listSessionIdsOnDisk } from '../out/history/store.js';
 import { readdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -115,6 +115,30 @@ if (biggest) {
 let titled = 0;
 for (const [sid] of loaded) { const m = await loadSessionMeta(DSH_HOME, sid); if (m.title) titled++; }
 console.log(`  ${titled}/${loaded.length} sessions have a usable title`);
+
+console.log('\n6. on-disk session listing (the sidebar path, no agent needed)');
+const here = '/Users/hacken/Code/dsh-vscode-acp';
+const diskIds = listSessionIdsOnDisk(DSH_HOME, here);
+console.log(`  ${diskIds.length} sessions found for ${here}`);
+await check('finds this workspace\'s sessions without an agent', () => assert.ok(diskIds.length > 0));
+await check('unknown workspace yields none, never throws', () =>
+  assert.equal(listSessionIdsOnDisk(DSH_HOME, '/nope/not/a/workspace').length, 0));
+await check('missing DSH_HOME yields none', () =>
+  assert.equal(listSessionIdsOnDisk('/nonexistent', here).length, 0));
+
+let depth0 = 0, depthN = 0, unknown = 0;
+for (const sid of real) {
+  const m = await loadSessionMeta(DSH_HOME, sid);
+  if (m.delegationDepth === 0) depth0++;
+  else if (typeof m.delegationDepth === 'number') depthN++;
+  else unknown++;
+}
+console.log(`  delegationDepth: ${depth0} root, ${depthN} delegated, ${unknown} unknown`);
+await check('delegated sub-sessions are detectable and would be filtered', () => assert.ok(depthN > 0));
+await check('cwd is recovered from the header', async () => {
+  const m = await loadSessionMeta(DSH_HOME, diskIds[0]);
+  assert.equal(typeof m.cwd, 'string');
+});
 
 console.log(failures === 0 ? '\nALL PASS\n' : `\n${failures} FAILED\n`);
 process.exit(failures === 0 ? 0 : 1);

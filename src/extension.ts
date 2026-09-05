@@ -157,7 +157,10 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export async function deactivate(): Promise<void> {
-  ChatPanel.disposeAll();
+  // Deliberately does NOT dispose the panels. Disposing a WebviewPanel closes its
+  // tab, and a tab closed during shutdown is a tab VS Code cannot restore on the
+  // next window — which is what made session tabs vanish across a reload. Closing
+  // the ACP sessions is enough; VS Code serializes the panels itself.
   await connection?.dispose();
   connection = null;
   sessions = null;

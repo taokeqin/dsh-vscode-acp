@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { AcpConnection } from '../acp/connection';
-import { loadSessionMeta, type SessionMeta } from '../history/store';
+import { listSessionIdsOnDisk, loadSessionMeta, type SessionMeta } from '../history/store';
 import { ChatPanel } from './chatPanel';
 import { sessionsHtml, type SessionsInbound, type SessionsOutbound } from './sessionsHtml';
 
@@ -82,7 +82,9 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
     try {
       meta = await loadSessionMeta(this.dshHome(), sessionId, this.workspaceRoot);
     } catch {
-      meta = { sessionId, title: null, createdAt: null, updatedAt: null };
+      meta = {
+        sessionId, title: null, createdAt: null, updatedAt: null, cwd: null, delegationDepth: null,
+      };
     }
     this.metaCache.set(sessionId, meta);
     return meta;
@@ -91,36 +93,51 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
   /**
    * Rebuilds the list.
    *
-   * session/list returns only INACTIVE sessions, so every session with an open tab
-   * is absent and must be merged back in — otherwise the list would hide exactly the
-   * sessions the user is working in.
+   * Sessions are enumerated from disk rather than from the agent, so the list
+   * renders on a fresh window before anything has been spawned. Requiring a running
+   * agent was a bug: a reloaded window showed an empty list and "agent not started"
+   * even with sessions on disk, because the process is only started lazily.
+   *
+   * Three sources are merged:
+   *   · on-disk sessions for this workspace  (works with no agent)
+   *   · session/list when the agent is up    (authoritative for resumability)
+   *   · sessions with an open tab            (absent from session/list, which
+   *                                           returns only INACTIVE sessions)
    */
   async refresh(): Promise<void> {
     if (!this.view) return;
     const openIds = ChatPanel.openSessionIds();
     const activeId = ChatPanel.activeSessionId();
 
-    let inactive: string[] = [];
+    const ids = new Set<string>(openIds);
+    try {
+      for (const id of listSessionIdsOnDisk(this.dshHome(), this.workspaceRoot)) ids.add(id);
+    } catch (err) {
+      this.log(`[sessions] disk scan failed: ${String(err)}`);
+    }
     if (this.connection.running) {
       try {
-        inactive = (await this.connection.listSessions()).map((s) => s.sessionId);
+        for (const s of await this.connection.listSessions()) ids.add(s.sessionId);
       } catch (err) {
         this.log(`[sessions] list failed: ${String(err)}`);
       }
     }
-    const ids = [...new Set([...openIds, ...inactive])];
-    const metas = await Promise.all(ids.map((id) => this.metaFor(id)));
+
+    const metas = await Promise.all([...ids].map((id) => this.metaFor(id)));
+    // Drop delegated sub-agent runs: only depth 0 is a conversation the user started.
+    // This is what session/list means by "root sessions"; the disk holds both.
+    const roots = metas.filter((m) => m.delegationDepth === null || m.delegationDepth === 0);
     // Open sessions first, then most recently active. An open session with no log
     // yet (brand new) would otherwise sink to the bottom.
     const weight = (m: SessionMeta): number => m.updatedAt ?? (openIds.includes(m.sessionId) ? Date.now() : 0);
-    metas.sort((a, b) => {
+    roots.sort((a, b) => {
       const openDelta = Number(openIds.includes(b.sessionId)) - Number(openIds.includes(a.sessionId));
       return openDelta !== 0 ? openDelta : weight(b) - weight(a);
     });
 
     this.post({
       type: 'sessions',
-      items: metas.map((m) => ({
+      items: roots.map((m) => ({
         id: m.sessionId,
         title: m.title ?? 'new session',
         when: relativeTime(m.updatedAt),
@@ -128,9 +145,10 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
         active: m.sessionId === activeId,
       })),
     });
+    const count = `${roots.length} session${roots.length === 1 ? '' : 's'}`;
     this.post({
       type: 'status',
-      text: this.connection.running ? `${metas.length} sessions · ${this.connection.agentName}` : 'agent not started',
+      text: this.connection.running ? `${count} · ${this.connection.agentName}` : `${count} · agent idle`,
     });
   }
 
