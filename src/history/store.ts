@@ -90,8 +90,14 @@ export function slugForCwd(cwd: string): string {
  * `bytesWritten` (exactly the bytes that frame consumed), repeat. Measured at 549 ms
  * for the 3.2 MB / 9014-frame worst case versus 63 ms for the CLI — slower, but it
  * needs nothing installed, so it is the primary path and the CLI is the fallback.
+ *
+ * @param frameBudget stop after this many frames. Session metadata lives in the first
+ *   few records, so the switcher reads a handful of frames instead of megabytes.
  */
-async function decompressZstd(buf: Buffer): Promise<{ ok: true; text: string } | { ok: false; reason: string }> {
+async function decompressZstd(
+  buf: Buffer,
+  frameBudget = MAX_FRAMES,
+): Promise<{ ok: true; text: string } | { ok: false; reason: string }> {
   const createStream = (zlib as unknown as { createZstdDecompress?: () => NodeJS.ReadWriteStream & { bytesWritten: number } })
     .createZstdDecompress;
   if (typeof createStream === 'function') {
@@ -100,6 +106,7 @@ async function decompressZstd(buf: Buffer): Promise<{ ok: true; text: string } |
       let offset = 0;
       let frames = 0;
       while (offset < buf.length) {
+        if (frames >= frameBudget) break; // Budget reached: return what decoded so far.
         if (++frames > MAX_FRAMES) {
           return { ok: false, reason: `log exceeds the ${MAX_FRAMES} frame cap` };
         }
@@ -219,6 +226,79 @@ export function parseTranscript(jsonl: string, maxEntries: number): HistoryResul
   // Keep the tail: the most recent exchange is what the reader needs on resume.
   const truncated = entries.length > maxEntries;
   return { ok: true, entries: truncated ? entries.slice(-maxEntries) : entries, truncated, scanned };
+}
+
+/** Descriptive metadata for one persisted session, for the switcher. */
+export interface SessionMeta {
+  sessionId: string;
+  /** First user message, used by dsh as the fallback session title. */
+  title: string | null;
+  createdAt: number | null;
+  /** Log file mtime — the closest available proxy for last activity. */
+  updatedAt: number | null;
+}
+
+/** Frames to decode when only the header and title are wanted. */
+const META_FRAME_BUDGET = 64;
+
+/**
+ * Reads a session's header and title without decompressing the whole log.
+ *
+ * The `session` record is the first line and `session/title` follows within the
+ * first few, so a small frame budget is enough. Returns nulls rather than failing:
+ * a switcher entry with a missing title is still usable.
+ */
+export async function loadSessionMeta(
+  dshHome: string,
+  sessionId: string,
+  cwd?: string,
+): Promise<SessionMeta> {
+  const empty: SessionMeta = { sessionId, title: null, createdAt: null, updatedAt: null };
+  let path: string | null;
+  try {
+    path = findSessionLog(dshHome, sessionId, cwd);
+  } catch {
+    return empty;
+  }
+  if (path === null) return empty;
+
+  let updatedAt: number | null = null;
+  let buf: Buffer;
+  try {
+    const st = statSync(path);
+    updatedAt = st.mtimeMs;
+    if (st.size > MAX_COMPRESSED_BYTES) return { ...empty, updatedAt };
+    buf = readFileSync(path);
+  } catch {
+    return empty;
+  }
+
+  const raw = await decompressZstd(buf, META_FRAME_BUDGET);
+  if (!raw.ok) return { ...empty, updatedAt };
+
+  let title: string | null = null;
+  let createdAt: number | null = null;
+  for (const line of raw.text.split('\n')) {
+    if (line === '') continue;
+    let rec: { type?: string; data?: Record<string, unknown>; createdAt?: number };
+    try {
+      rec = JSON.parse(line) as typeof rec;
+    } catch {
+      continue;
+    }
+    if (rec.type === 'session' && typeof rec.createdAt === 'number') createdAt = rec.createdAt;
+    if (rec.type === 'session/title') {
+      const t = (rec.data as { title?: unknown } | undefined)?.title;
+      if (typeof t === 'string' && t.trim() !== '') title = t.trim();
+    }
+    // Fall back to the first user message if no title record was written yet.
+    if (title === null && rec.type === 'user/message') {
+      const t = textOfBlocks((rec.data as { content?: unknown } | undefined)?.content).trim();
+      if (t !== '') title = t;
+    }
+    if (title !== null && createdAt !== null) break;
+  }
+  return { sessionId, title, createdAt, updatedAt };
 }
 
 /** Locates, decompresses, and parses one session's transcript. Never throws. */

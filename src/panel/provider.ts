@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { loadTranscript } from '../history/store';
+import { loadSessionMeta, loadTranscript, type SessionMeta } from '../history/store';
 import { AgentSession } from '../acp/session';
 import type { ConfigOption, SessionUpdate, ToolCallContent } from '../acp/types';
 import { chatHtml, type PanelInbound, type PanelOutbound } from './html';
@@ -40,6 +40,18 @@ function flattenToolContent(content: ToolCallContent[] | undefined): string {
     .map((c) => (c.content && typeof c.content.text === 'string' ? c.content.text : ''))
     .filter(Boolean)
     .join('\n');
+}
+
+/** Compact relative time for the session switcher ("3m ago", "2d ago"). */
+function relativeTime(ms: number | null): string {
+  if (ms === null) return '';
+  const secs = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (secs < 60) return 'just now';
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
 }
 
 /** Reads the human-readable name of the currently selected value of a config option. */
@@ -343,24 +355,69 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.pushState();
   }
 
+  /**
+   * Session switcher.
+   *
+   * `session/list` deliberately omits the ACTIVE session, so the current one is
+   * added back explicitly and marked — otherwise the list would be missing exactly
+   * the session the user is looking at. Titles and timestamps come from the on-disk
+   * log (best effort); without them the picker would only show truncated ids.
+   */
   async pickSession(): Promise<void> {
     await this.ensureSession();
-    if (!this.session) return;
-    const sessions = await this.session.listSessions();
-    if (sessions.length === 0) {
-      void vscode.window.showInformationMessage('DSH: no persisted sessions for this workspace.');
+    const session = this.session;
+    if (!session) return;
+
+    const dshHome = process.env.DSH_HOME ?? path.join(homedir(), '.dsh');
+    let others: { sessionId: string }[] = [];
+    try {
+      others = await session.listSessions();
+    } catch (err) {
+      this.log(`[session] list failed: ${String(err)}`);
+    }
+
+    const currentId = session.id;
+    const ids = [...(currentId ? [currentId] : []), ...others.map((s) => s.sessionId)];
+    if (ids.length === 0) {
+      void vscode.window.showInformationMessage('DSH: no sessions for this workspace.');
       return;
     }
-    const picked = await vscode.window.showQuickPick(
-      sessions.map((s, i) => ({
-        label: `${i === 0 ? '$(star-full) ' : ''}${s.sessionId.slice(0, 12)}…`,
-        description: i === 0 ? 'most recent' : '',
-        id: s.sessionId,
-      })),
-      { placeHolder: 'Resume a session (history is not replayed)' },
+
+    // Metadata is a nicety; a failed read degrades to a bare id rather than an error.
+    const metas = await Promise.all(
+      ids.map(async (id): Promise<SessionMeta> => {
+        try {
+          return await loadSessionMeta(dshHome, id, this.workspaceRoot);
+        } catch {
+          return { sessionId: id, title: null, createdAt: null, updatedAt: null };
+        }
+      }),
     );
-    if (!picked) return;
-    await this.session.resume(picked.id);
+    // Current first; the rest most-recently-active first.
+    const rest = metas
+      .filter((m) => m.sessionId !== currentId)
+      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    const ordered = metas.filter((m) => m.sessionId === currentId).concat(rest);
+
+    const items = ordered.map((m) => {
+      const isCurrent = m.sessionId === currentId;
+      const title = m.title ?? '(no messages yet)';
+      return {
+        label: `${isCurrent ? '$(check) ' : '$(comment-discussion) '}${title.replace(/\s+/g, ' ').slice(0, 72)}`,
+        description: isCurrent ? 'current session' : relativeTime(m.updatedAt),
+        detail: `${m.sessionId.slice(0, 12)}…${m.createdAt ? `  ·  created ${relativeTime(m.createdAt)}` : ''}`,
+        id: m.sessionId,
+        isCurrent,
+      };
+    });
+
+    const picked = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Switch session  ·  history is restored from disk, not replayed by the agent',
+      matchOnDetail: true,
+    });
+    if (!picked || picked.isCurrent) return; // Selecting the current session is a no-op.
+
+    await session.resume(picked.id);
     this.post({ type: 'clear' });
     void this.replayHistory(picked.id);
     this.pushState();

@@ -52,6 +52,18 @@ with `dshAgent.replayHistory: false`.
 
 Restored entries render dimmed above a `restored — continuing this session` divider.
 
+## Session switcher
+
+`session/list` deliberately omits the **active** session, so the switcher adds the
+current one back explicitly and marks it `$(check) current session` at the top —
+otherwise the list would be missing exactly the session you are looking at.
+
+Entries are labelled with the session title (dsh writes the first user message as a
+fallback title, since the acp profile disables model-generated ones) and a relative
+timestamp, read from the on-disk log. Metadata uses a 64-frame budget rather than
+decompressing the whole log: 2 ms versus 320 ms per session on the largest one here.
+A session whose metadata cannot be read still lists, as `(no messages yet)`.
+
 ### What the log actually looks like
 
 Measured, because none of this is documented:

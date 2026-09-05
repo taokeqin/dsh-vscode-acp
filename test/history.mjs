@@ -1,6 +1,6 @@
 // test/history.mjs — transcript recovery against real on-disk dsh session logs.
 // Asserts structure and failure behaviour only; conversation text is never printed.
-import { loadTranscript, parseTranscript, slugForCwd, findSessionLog } from '../out/history/store.js';
+import { loadTranscript, parseTranscript, slugForCwd, loadSessionMeta } from '../out/history/store.js';
 import { readdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -92,6 +92,29 @@ if (biggest) {
     assert.ok(kinds.user > 0 && kinds.assistant > 0 && kinds.tool > 0);
   });
 }
+
+console.log('\n5. session metadata (switcher)');
+await check('unknown id degrades to nulls, never throws', async () => {
+  const m = await loadSessionMeta(DSH_HOME, 'nope-000');
+  assert.equal(m.title, null); assert.equal(m.sessionId, 'nope-000');
+});
+if (biggest) {
+  const [sid] = biggest;
+  const t0 = Date.now();
+  const m = await loadSessionMeta(DSH_HOME, sid);
+  const metaMs = Date.now() - t0;
+  const t1 = Date.now();
+  await loadTranscript({ dshHome: DSH_HOME, sessionId: sid, maxEntries: 200 });
+  const fullMs = Date.now() - t1;
+  await check('title recovered', () => assert.ok(m.title && m.title.length > 0));
+  await check('createdAt recovered', () => assert.ok(typeof m.createdAt === 'number' && m.createdAt > 0));
+  await check('updatedAt recovered', () => assert.ok(typeof m.updatedAt === 'number' && m.updatedAt > 0));
+  await check(`frame budget beats a full read (${metaMs}ms vs ${fullMs}ms)`, () => assert.ok(metaMs < fullMs));
+  console.log(`  title length: ${m.title.length} chars (content not printed)`);
+}
+let titled = 0;
+for (const [sid] of loaded) { const m = await loadSessionMeta(DSH_HOME, sid); if (m.title) titled++; }
+console.log(`  ${titled}/${loaded.length} sessions have a usable title`);
 
 console.log(failures === 0 ? '\nALL PASS\n' : `\n${failures} FAILED\n`);
 process.exit(failures === 0 ? 0 : 1);
