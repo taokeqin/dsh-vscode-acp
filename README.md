@@ -151,9 +151,21 @@ required `name` and `description`, plus optional `disable-model-invocation` and
 The scan was validated against dsh itself: a session log records the catalog dsh
 splices into the conversation, and the disk scan reproduces it exactly.
 
-The composer's **Skills** button (hidden when a workspace has none) opens a
-searchable list and inserts a plain-text reference, since a skill is invoked by the
-model reading the prompt — there is no command channel to call one through.
+Typing `/` at the start of a line opens the skill list **inline above the composer**
+— arrow keys to move, Enter or Tab to accept, Esc to dismiss. A quick pick was tried
+first and felt too far away: choosing a skill is part of writing the message, not a
+separate errand. The **Skills** button (hidden when a workspace has none) opens the
+same menu rather than being a second path.
+
+The slash must open a line. That rule is what keeps `src/index.ts` or "and/or" from
+popping the menu mid-sentence.
+
+Accepting inserts a plain-text reference, since a skill is invoked by the model
+reading the prompt — there is no command channel to call one through.
+
+The trigger and filtering live in `src/slashMenu.ts` and are injected into the panel
+script through `Function.prototype.toString()`, so the code the tests exercise is
+literally the code that ships — no second copy to drift.
 
 **Slash commands are not available over ACP and cannot be faked.** `dsh-commands`
 says it directly — "UI-less demo spines and ACP automation provide no command

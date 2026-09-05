@@ -13,7 +13,7 @@ import { loadTranscript } from '../history/store';
 import { inlineToText, parseMarkdown, type Block } from '../markdown';
 import { loadSkills, type Skill } from '../skills';
 import { pickSessionColumn } from '../panelColumn';
-import { chatHtml, type ConfigOptionView, type PanelInbound, type PanelOutbound } from './html';
+import { chatHtml, type ConfigOptionView, type PanelInbound, type PanelOutbound, type SkillView } from './html';
 
 /** Tool arguments that name a file, in the order we prefer them. */
 const PATH_KEYS = ['file_path', 'path', 'filePath', 'notebook_path'];
@@ -263,6 +263,8 @@ export class ChatPanel {
       case 'ready':
         // The webview persists { sessionId } so a reload can rebind this same session.
         void this.panel.webview.postMessage({ type: 'restoreState', state: { sessionId: this.sessionId } });
+        // Re-scan on open so a skill added since the window started shows up.
+        this.skillsCache = null;
         this.pushState();
         break;
       case 'send':
@@ -279,9 +281,6 @@ export class ChatPanel {
         break;
       case 'setOption':
         await this.setOption(msg.id, msg.value);
-        break;
-      case 'pickSkill':
-        await this.pickSkill();
         break;
     }
   }
@@ -464,28 +463,20 @@ export class ChatPanel {
     return this.skillsCache;
   }
 
-  /** Offers the skill catalog and drops a reference into the composer. */
-  private async pickSkill(): Promise<void> {
-    // Re-scan on open so a skill added mid-session shows up without a reload.
-    this.skillsCache = null;
-    const skills = this.skills().filter((s) => s.userInvocable);
-    if (skills.length === 0) {
-      void vscode.window.showInformationMessage('DSH: no skills found for this workspace.');
-      return;
-    }
-    const picked = await vscode.window.showQuickPick(
-      skills.map((s) => ({
-        label: s.name,
-        description: s.source,
-        detail: s.description.length > 200 ? `${s.description.slice(0, 200)}…` : s.description,
-        skill: s,
-      })),
-      { placeHolder: 'Insert a skill reference', matchOnDetail: true },
-    );
-    if (!picked) return;
-    // A skill is invoked by the model reading the prompt, so the reference is plain
-    // text — there is no command channel to call it through.
-    this.post({ type: 'insert', text: `Use the \`${picked.skill.name}\` skill: ` });
+  /**
+   * The skills the composer's slash menu offers.
+   *
+   * Descriptions are trimmed here rather than in the webview: the menu shows one
+   * line per skill, and shipping a 700-character description to render 60 of them
+   * is waste on every state push.
+   */
+  private skillViews(): SkillView[] {
+    return this.skills()
+      .filter((s) => s.userInvocable)
+      .map((s) => ({
+        name: s.name,
+        description: s.description.length > 140 ? `${s.description.slice(0, 140)}…` : s.description,
+      }));
   }
 
   private pushState(): void {
@@ -496,7 +487,7 @@ export class ChatPanel {
       // Everything the agent advertises — model and reasoning effort today — so the
       // composer renders whatever this build exposes rather than a hardcoded list.
       options: this.connection.configOptions(this.sessionId).map(flattenOption),
-      skills: this.skills().filter((s) => s.userInvocable).length,
+      skills: this.skillViews(),
     });
   }
 
@@ -505,7 +496,7 @@ export class ChatPanel {
     if (typeof text !== 'string' || text.trim() === '') return;
     // Rendered as Markdown too: sendSelection wraps the selection in a code fence.
     this.post({ type: 'user', blocks: parseMarkdown(text) });
-    this.post({ type: 'state', busy: true, sessionId: this.sessionId, options: [], skills: this.skills().length });
+    this.post({ type: 'state', busy: true, sessionId: this.sessionId, options: [], skills: this.skillViews() });
     ChatPanel.syncBusyContext();
     try {
       const res = await this.connection.prompt(this.sessionId, text);

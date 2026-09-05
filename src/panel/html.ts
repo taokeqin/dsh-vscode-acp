@@ -6,6 +6,13 @@
 // are deliberately absent from the ACP contract and cannot be shown here.
 
 import type { Block } from '../markdown';
+import { filterSkills, slashTrigger } from '../slashMenu';
+
+/** A skill offered by the composer's slash menu. */
+export interface SkillView {
+  name: string;
+  description: string;
+}
 
 /** One agent-advertised setting, flattened for a composer dropdown. */
 export interface ConfigOptionView {
@@ -22,13 +29,12 @@ export type PanelInbound =
   | { type: 'cancel' }
   | { type: 'openPath'; path: string }
   | { type: 'openExternal'; url: string }
-  | { type: 'setOption'; id: string; value: string }
-  | { type: 'pickSkill' };
+  | { type: 'setOption'; id: string; value: string };
 
 /** Messages the extension host posts down to the webview. */
 export type PanelOutbound =
   /** `options` are the agent's advertised config options (model, reasoning effort). */
-  | { type: 'state'; busy: boolean; sessionId: string | null; options: ConfigOptionView[]; skills: number }
+  | { type: 'state'; busy: boolean; sessionId: string | null; options: ConfigOptionView[]; skills: SkillView[] }
   /** Text to drop at the caret, e.g. a chosen skill reference. */
   | { type: 'insert'; text: string }
   | { type: 'user'; blocks: Block[] }
@@ -143,7 +149,24 @@ details.thought .body { margin-top: 6px; }
 .notice { font-size: 0.9em; padding: 5px 8px; border-radius: 3px; margin-bottom: 10px; }
 .notice.info  { background: var(--vscode-textBlockQuote-background); opacity: 0.85; }
 .notice.error { background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-inputValidation-errorBorder); }
-#composer { border-top: 1px solid var(--vscode-panel-border); padding: 8px; }
+#composer { border-top: 1px solid var(--vscode-panel-border); padding: 8px; position: relative; }
+/* Slash menu: anchored above the composer so it never covers what is being typed. */
+#slash {
+  display: none; position: absolute; left: 8px; right: 8px; bottom: 100%;
+  max-height: 230px; overflow-y: auto; z-index: 20; margin-bottom: 4px;
+  background: var(--vscode-editorSuggestWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-editorSuggestWidget-border, var(--vscode-panel-border));
+  border-radius: 4px; box-shadow: 0 3px 12px rgba(0,0,0,.35);
+}
+#slash.on { display: block; }
+#slash .item { padding: 5px 9px; cursor: pointer; }
+#slash .item.sel { background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-activeSelectionBackground)); }
+#slash .item .n { font-weight: 600; }
+#slash .item .d {
+  display: block; font-size: 0.86em; opacity: 0.7;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#slash .empty { padding: 7px 9px; opacity: 0.6; font-size: 0.9em; }
 #input {
   width: 100%; resize: none; min-height: 54px; max-height: 180px; padding: 6px 8px;
   color: var(--vscode-input-foreground); background: var(--vscode-input-background);
@@ -203,6 +226,7 @@ const stopBtn = document.getElementById('stop');
 const status = document.getElementById('status');
 const opts = document.getElementById('opts');
 const skillsBtn = document.getElementById('skills');
+const slash = document.getElementById('slash');
 
 let busy = false;
 let usage = null; // { used, size } once the agent has reported any
@@ -534,9 +558,85 @@ function send() {
   vscode.postMessage({ type: 'send', text });
 }
 
-// Skills are picked host-side: their descriptions are long, and a native quick pick
-// is searchable where a narrow <select> would just truncate them.
-skillsBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickSkill' }));
+// —— slash menu ——
+// Typing '/' at the start of a line opens the skill list inline. A quick pick was
+// tried first and felt too far from the composer: choosing a skill is part of
+// writing the message, not a separate errand.
+let skills = [];
+let slashItems = [];
+let slashIndex = 0;
+let slashFrom = -1; // caret offset of the '/' that opened the menu
+
+function closeSlash() {
+  slash.classList.remove('on');
+  slashItems = [];
+  slashFrom = -1;
+}
+
+/*__SLASH_LOGIC__*/
+
+function renderSlash() {
+  slash.replaceChildren();
+  if (slashItems.length === 0) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = 'No matching skill';
+    slash.append(e);
+    return;
+  }
+  slashItems.forEach((s, i) => {
+    const row = document.createElement('div');
+    row.className = 'item' + (i === slashIndex ? ' sel' : '');
+    row.setAttribute('role', 'option');
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = '/' + s.name;
+    const d = document.createElement('span');
+    d.className = 'd';
+    d.textContent = s.description;
+    row.append(n, d);
+    row.onmousedown = (ev) => { ev.preventDefault(); acceptSlash(i); };
+    slash.append(row);
+  });
+  const sel = slash.querySelector('.sel');
+  if (sel) sel.scrollIntoView({ block: 'nearest' });
+}
+
+function updateSlash() {
+  if (skills.length === 0) return closeSlash();
+  const hit = slashTrigger(input.value, input.selectionStart ?? 0);
+  if (!hit) return closeSlash();
+  slashItems = filterSkills(skills, hit.query);
+  slashFrom = hit.from;
+  slashIndex = 0;
+  slash.classList.add('on');
+  renderSlash();
+}
+
+/** Replaces the '/query' token with a reference the model will act on. */
+function acceptSlash(i) {
+  const chosen = slashItems[i];
+  if (!chosen || slashFrom < 0) return closeSlash();
+  const caret = input.selectionStart ?? 0;
+  // A literal backtick would close the String.raw template this script lives in.
+  const tick = String.fromCharCode(96);
+  const text = 'Use the ' + tick + chosen.name + tick + ' skill: ';
+  input.value = input.value.slice(0, slashFrom) + text + input.value.slice(caret);
+  const pos = slashFrom + text.length;
+  closeSlash();
+  input.setSelectionRange(pos, pos);
+  input.focus();
+  input.dispatchEvent(new Event('input'));
+}
+
+// The button is a discoverability affordance for the same menu, not a second path.
+skillsBtn.addEventListener('click', () => {
+  const caret = input.selectionStart ?? input.value.length;
+  const before = input.value.slice(0, caret);
+  const needsBreak = before !== '' && !before.endsWith('\n');
+  insertAtCaret((needsBreak ? '\n' : '') + '/');
+  updateSlash();
+});
 
 /** Drops text at the caret and keeps focus in the composer. */
 function insertAtCaret(text) {
@@ -552,12 +652,36 @@ function insertAtCaret(text) {
 sendBtn.addEventListener('click', send);
 stopBtn.addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
 input.addEventListener('keydown', (e) => {
+  // While the menu is open it owns navigation keys, so Enter picks a skill rather
+  // than sending a half-written message.
+  if (slash.classList.contains('on')) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (slashItems.length > 0) {
+        slashIndex = (slashIndex + (e.key === 'ArrowDown' ? 1 : -1) + slashItems.length) % slashItems.length;
+        renderSlash();
+      }
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      if (slashItems.length > 0) { e.preventDefault(); acceptSlash(slashIndex); return; }
+      closeSlash();
+    }
+    if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
+  }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
 input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+  updateSlash();
 });
+// The trigger depends on the caret, so moving it must re-evaluate the menu.
+input.addEventListener('keyup', (e) => {
+  if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) updateSlash();
+});
+input.addEventListener('click', updateSlash);
+input.addEventListener('blur', closeSlash);
 
 window.addEventListener('message', (e) => {
   const m = e.data;
@@ -566,8 +690,9 @@ window.addEventListener('message', (e) => {
     case 'state':
       setBusy(m.busy === true);
       renderOptions(m.options);
+      skills = Array.isArray(m.skills) ? m.skills : [];
       // Hidden entirely when the workspace and user config define no skills.
-      skillsBtn.classList.toggle('on', Number(m.skills) > 0);
+      skillsBtn.classList.toggle('on', skills.length > 0);
       renderStatus();
       break;
     case 'insert': insertAtCaret(String(m.text ?? '')); break;
@@ -611,6 +736,15 @@ input.focus();
  * Builds the panel document.
  * @param nonce cryptographically random per-render CSP nonce
  */
+/**
+ * The decision helpers, injected verbatim so the panel runs the same code the tests
+ * exercise. They are plain functions with no closure over module scope, which is
+ * what makes serialising them safe.
+ */
+function slashLogicSource(): string {
+  return [slashTrigger.toString(), filterSkills.toString()].join('\n');
+}
+
 export function chatHtml(nonce: string): string {
   const csp = [
     "default-src 'none'",
@@ -629,6 +763,7 @@ export function chatHtml(nonce: string): string {
 <body>
 <div id="log"></div>
 <div id="composer">
+  <div id="slash" role="listbox"></div>
   <textarea id="input" rows="2" placeholder="Ask the agent  (Enter to send, Shift+Enter for a newline)"></textarea>
   <div id="bar">
     <span id="opts"></span>
@@ -638,7 +773,7 @@ export function chatHtml(nonce: string): string {
     <button id="send">Send</button>
   </div>
 </div>
-<script nonce="${nonce}">${SCRIPT}</script>
+<script nonce="${nonce}">${SCRIPT.replace('/*__SLASH_LOGIC__*/', slashLogicSource())}</script>
 </body>
 </html>`;
 }
