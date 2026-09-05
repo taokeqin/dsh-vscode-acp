@@ -154,6 +154,25 @@ after each one. Measured 549 ms for the 3.2 MB / 9014-frame worst case (the `zst
 CLI does it in 63 ms and is kept as a fallback for hosts whose Node predates zstd,
 added in 22.15). Output is byte-identical to the CLI.
 
+## Finding the `dsh` executable
+
+`spawn('dsh')` is not enough. A VS Code launched from the Dock inherits the *system*
+PATH — `/usr/gnu/bin:/usr/local/bin:/bin:/usr/bin` here — not your shell's, so an
+install under a version manager is invisible to it and the agent fails with
+`spawn dsh ENOENT` even though `which dsh` works in every terminal.
+
+Discovery runs cheapest-first and only the last step spawns anything:
+
+1. `dshAgent.executablePath` when set — an absolute path is taken as-is
+2. `process.env.PATH` — works when VS Code was started from a terminal
+3. version-manager and package-manager directories: every installed nvm version,
+   then volta, fnm, asdf, bun, homebrew, `~/.npm-global`
+4. the login shell's own PATH (`$SHELL -lic 'command -v dsh'`), with a 5 s timeout
+
+If all four fail, the error names `dshAgent.executablePath` and offers a button that
+opens that setting. `test/locate.mjs` covers each branch, including a simulated
+Dock-launch PATH and a login shell that hangs.
+
 ## Security notes
 
 **The agent writes files with no prompt.** Measured: asking the agent to create a

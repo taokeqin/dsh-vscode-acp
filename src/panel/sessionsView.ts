@@ -200,6 +200,23 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
     await this.newSession();
   }
 
+  /**
+   * Surfaces a start failure with a way out.
+   *
+   * The common cause is a GUI-launched VS Code that cannot see a version-manager
+   * install, so the message offers to open the setting that fixes it permanently.
+   */
+  private async reportStartFailure(err: unknown): Promise<void> {
+    const message = String(err instanceof Error ? err.message : err);
+    const openSetting = 'Open Setting';
+    const choice = await vscode.window.showErrorMessage(message, openSetting, 'Show Logs');
+    if (choice === openSetting) {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'dshAgent.executablePath');
+    } else if (choice === 'Show Logs') {
+      await vscode.commands.executeCommand('dshAgent.showLogs');
+    }
+  }
+
   /** Creates a session and opens it in a new editor tab. */
   async newSession(): Promise<void> {
     try {
@@ -208,9 +225,7 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
       await this.refresh();
     } catch (err) {
       this.log(`[sessions] create failed: ${String(err)}`);
-      void vscode.window.showErrorMessage(
-        `DSH: could not start a session: ${String(err)}. Check that "dsh" is on PATH or set dshAgent.executablePath.`,
-      );
+      void this.reportStartFailure(err);
     }
   }
 
@@ -231,7 +246,7 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
       await this.connection.resume(sessionId);
     } catch (err) {
       this.log(`[sessions] resume failed for ${sessionId}: ${String(err)}`);
-      void vscode.window.showWarningMessage(`DSH: could not open that session: ${String(err)}`);
+      void this.reportStartFailure(err);
       return;
     }
     const panel = ChatPanel.create(

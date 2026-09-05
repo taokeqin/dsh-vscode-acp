@@ -129,7 +129,7 @@
           "type": "string",
           "default": "dsh",
           "scope": "machine",
-          "markdownDescription": "Path to the `dsh` executable. Machine-scoped on purpose: a workspace must not be able to point this at an arbitrary binary."
+          "markdownDescription": "Absolute path to the `dsh` executable. Leave empty to search: PATH, then version-manager directories (nvm/fnm/volta/asdf/homebrew), then your login shell. Set it explicitly if discovery fails. Machine-scoped on purpose: a workspace must not be able to point this at an arbitrary binary."
         },
         "dshAgent.profile": {
           "type": "string",
@@ -176,7 +176,7 @@
     "watch": "tsc -w -p ./",
     "typecheck": "tsc --noEmit -p ./",
     "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies -o dsh-agent.vsix",
-    "test": "npm run compile && node test/smoke.mjs && node test/history.mjs"
+    "test": "npm run compile && node test/locate.mjs && node test/smoke.mjs && node test/history.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

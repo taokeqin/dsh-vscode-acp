@@ -6,6 +6,7 @@
 // and routes session/update notifications to whoever subscribed to that id.
 import { realpathSync } from 'node:fs';
 import { AcpClient } from './client';
+import { locateDsh, notFoundMessage } from './locate';
 import type {
   ConfigOption,
   InitializeResult,
@@ -34,6 +35,7 @@ function samePath(a: string, b: string): boolean {
 }
 
 export interface AcpConnectionOptions {
+  /** `dshAgent.executablePath`; empty means "find dsh yourself". */
   command: string;
   profile: string;
   /** Workspace root; every session is created against this absolute cwd. */
@@ -88,8 +90,15 @@ export class AcpConnection {
   }
 
   private async start(): Promise<void> {
+    // Resolve the executable rather than relying on spawn's PATH lookup: a
+    // Dock-launched VS Code inherits the system PATH, which excludes nvm/fnm/volta
+    // shims, so a bare 'dsh' fails with ENOENT even when `which dsh` works.
+    const found = locateDsh(this.opts.command);
+    if (found === null) throw new Error(notFoundMessage(this.opts.command));
+    this.opts.log(`[acp] using ${found.path} (found via ${found.via})`);
+
     const client = new AcpClient({
-      command: this.opts.command,
+      command: found.path,
       args: ['--profile', this.opts.profile],
       cwd: this.opts.cwd,
       log: this.opts.log,
