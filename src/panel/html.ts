@@ -6,6 +6,7 @@
 // are deliberately absent from the ACP contract and cannot be shown here.
 
 import type { Block } from '../markdown';
+import { menuHandlesKey, shouldSubmit } from '../composerKeys';
 import { filterSkills, slashTrigger } from '../slashMenu';
 
 /** A skill offered by the composer's slash menu. */
@@ -176,23 +177,6 @@ details.thought .body { margin-top: 6px; }
 #input:focus { outline: 1px solid var(--vscode-focusBorder); }
 #bar { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 0.85em; }
 #opts { display: flex; gap: 4px; flex: none; align-items: center; }
-#skills {
-  display: none; flex: none; padding: 2px 7px; font-size: 0.95em; line-height: 1.35;
-  background: transparent; color: var(--vscode-foreground);
-  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
-  border-radius: 3px; cursor: pointer; opacity: 0.85;
-}
-#skills.on { display: block; }
-#skills:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); opacity: 1; }
-#opts select {
-  font-family: inherit; font-size: 0.95em; padding: 1px 4px; max-width: 130px;
-  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
-  background: var(--vscode-dropdown-background, transparent);
-  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
-  border-radius: 3px; cursor: pointer;
-}
-#opts select:hover { background: var(--vscode-list-hoverBackground); }
-#opts select:disabled { opacity: 0.5; cursor: default; }
 #status { flex: 1; display: flex; justify-content: flex-end; align-items: center; }
 /* Context usage: a ring rather than a number, since the exact token count is
    rarely what you want mid-conversation — the hover title carries it. */
@@ -225,7 +209,6 @@ const sendBtn = document.getElementById('send');
 const stopBtn = document.getElementById('stop');
 const status = document.getElementById('status');
 const opts = document.getElementById('opts');
-const skillsBtn = document.getElementById('skills');
 const slash = document.getElementById('slash');
 
 let busy = false;
@@ -544,13 +527,14 @@ function renderOptions(list) {
 function setBusy(v) {
   busy = v;
   for (const sel of opts.querySelectorAll('select')) sel.disabled = v;
-  skillsBtn.disabled = v;
   sendBtn.disabled = v;
   stopBtn.hidden = !v;
   input.placeholder = v ? 'Agent is working…' : 'Ask the agent  (Enter to send, Shift+Enter for a newline)';
 }
 
 function send() {
+  // A click on Send during composition would read a value the IME has not committed.
+  if (composing) return;
   const text = input.value.trim();
   if (text === '' || busy) return;
   input.value = '';
@@ -629,15 +613,6 @@ function acceptSlash(i) {
   input.dispatchEvent(new Event('input'));
 }
 
-// The button is a discoverability affordance for the same menu, not a second path.
-skillsBtn.addEventListener('click', () => {
-  const caret = input.selectionStart ?? input.value.length;
-  const before = input.value.slice(0, caret);
-  const needsBreak = before !== '' && !before.endsWith('\n');
-  insertAtCaret((needsBreak ? '\n' : '') + '/');
-  updateSlash();
-});
-
 /** Drops text at the caret and keeps focus in the composer. */
 function insertAtCaret(text) {
   const start = input.selectionStart ?? input.value.length;
@@ -651,10 +626,17 @@ function insertAtCaret(text) {
 
 sendBtn.addEventListener('click', send);
 stopBtn.addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
+// An IME reports composition around candidate selection; nothing typed during it is
+// final, so neither sending nor the slash menu may act on those keys.
+let composing = false;
+input.addEventListener('compositionstart', () => { composing = true; });
+input.addEventListener('compositionend', () => { composing = false; updateSlash(); });
+
 input.addEventListener('keydown', (e) => {
+  const ime = { ...{ key: e.key, shiftKey: e.shiftKey, keyCode: e.keyCode }, isComposing: e.isComposing || composing };
   // While the menu is open it owns navigation keys, so Enter picks a skill rather
   // than sending a half-written message.
-  if (slash.classList.contains('on')) {
+  if (slash.classList.contains('on') && menuHandlesKey(ime)) {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       if (slashItems.length > 0) {
@@ -669,12 +651,13 @@ input.addEventListener('keydown', (e) => {
     }
     if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
   }
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  if (shouldSubmit(ime)) { e.preventDefault(); send(); }
 });
 input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 180) + 'px';
-  updateSlash();
+  // Candidate text is not a query; wait for the composition to settle.
+  if (!composing) updateSlash();
 });
 // The trigger depends on the caret, so moving it must re-evaluate the menu.
 input.addEventListener('keyup', (e) => {
@@ -690,9 +673,8 @@ window.addEventListener('message', (e) => {
     case 'state':
       setBusy(m.busy === true);
       renderOptions(m.options);
+      // Skills are reached by typing '/' at the start of a line; no toolbar button.
       skills = Array.isArray(m.skills) ? m.skills : [];
-      // Hidden entirely when the workspace and user config define no skills.
-      skillsBtn.classList.toggle('on', skills.length > 0);
       renderStatus();
       break;
     case 'insert': insertAtCaret(String(m.text ?? '')); break;
@@ -742,7 +724,12 @@ input.focus();
  * what makes serialising them safe.
  */
 function slashLogicSource(): string {
-  return [slashTrigger.toString(), filterSkills.toString()].join('\n');
+  return [
+    slashTrigger.toString(),
+    filterSkills.toString(),
+    shouldSubmit.toString(),
+    menuHandlesKey.toString(),
+  ].join('\n');
 }
 
 export function chatHtml(nonce: string): string {
@@ -767,7 +754,6 @@ export function chatHtml(nonce: string): string {
   <textarea id="input" rows="2" placeholder="Ask the agent  (Enter to send, Shift+Enter for a newline)"></textarea>
   <div id="bar">
     <span id="opts"></span>
-    <button id="skills" title="Insert a skill reference">Skills</button>
     <span id="status"></span>
     <button id="stop" class="secondary" hidden>Stop</button>
     <button id="send">Send</button>

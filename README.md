@@ -154,8 +154,7 @@ splices into the conversation, and the disk scan reproduces it exactly.
 Typing `/` at the start of a line opens the skill list **inline above the composer**
 — arrow keys to move, Enter or Tab to accept, Esc to dismiss. A quick pick was tried
 first and felt too far away: choosing a skill is part of writing the message, not a
-separate errand. The **Skills** button (hidden when a workspace has none) opens the
-same menu rather than being a second path.
+separate errand. There is no toolbar button; the slash is the entry point.
 
 The slash must open a line. That rule is what keeps `src/index.ts` or "and/or" from
 popping the menu mid-sentence.
@@ -163,9 +162,19 @@ popping the menu mid-sentence.
 Accepting inserts a plain-text reference, since a skill is invoked by the model
 reading the prompt — there is no command channel to call one through.
 
-The trigger and filtering live in `src/slashMenu.ts` and are injected into the panel
-script through `Function.prototype.toString()`, so the code the tests exercise is
-literally the code that ships — no second copy to drift.
+The trigger and filtering live in `src/slashMenu.ts`, and the Enter/IME decisions in
+`src/composerKeys.ts`. Both are injected into the panel script through
+`Function.prototype.toString()`, so the code the tests exercise is literally the code
+that ships — no second copy to drift.
+
+### Input methods
+
+Enter during IME composition belongs to the input method, not to us. An IME uses it
+to accept a candidate, and that keydown arrives *before* the text is committed — so
+sending on it shipped the message and then let the IME commit the accepted word into
+the emptied box, leaving the last word behind. Both `isComposing` and the legacy
+`keyCode === 229` signal are honoured, for the slash menu's navigation keys as well
+as for sending.
 
 **Slash commands are not available over ACP and cannot be faked.** `dsh-commands`
 says it directly — "UI-less demo spines and ACP automation provide no command
