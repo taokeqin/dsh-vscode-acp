@@ -11,6 +11,7 @@ import type { AcpConnection } from '../acp/connection';
 import type { ConfigOption, SessionUpdate, ToolCallContent } from '../acp/types';
 import { loadTranscript } from '../history/store';
 import { inlineToText, parseMarkdown, type Block } from '../markdown';
+import { loadSkills, type Skill } from '../skills';
 import { pickSessionColumn } from '../panelColumn';
 import { chatHtml, type ConfigOptionView, type PanelInbound, type PanelOutbound } from './html';
 
@@ -279,6 +280,9 @@ export class ChatPanel {
       case 'setOption':
         await this.setOption(msg.id, msg.value);
         break;
+      case 'pickSkill':
+        await this.pickSkill();
+        break;
     }
   }
 
@@ -438,6 +442,52 @@ export class ChatPanel {
     }
   }
 
+  /**
+   * Skills the agent can use, read from disk.
+   *
+   * ACP exposes no skill surface, but they are Markdown files in documented roots,
+   * so the catalog is rebuilt independently — verified to match the list dsh itself
+   * splices into a session. Cached per panel: the roots are watched by dsh, not by
+   * us, and re-scanning on every state push would be wasteful.
+   */
+  private skillsCache: Skill[] | null = null;
+
+  private skills(): Skill[] {
+    if (this.skillsCache === null) {
+      try {
+        this.skillsCache = loadSkills(this.workspaceRoot);
+      } catch (err) {
+        this.log(`[skills] scan failed: ${String(err)}`);
+        this.skillsCache = [];
+      }
+    }
+    return this.skillsCache;
+  }
+
+  /** Offers the skill catalog and drops a reference into the composer. */
+  private async pickSkill(): Promise<void> {
+    // Re-scan on open so a skill added mid-session shows up without a reload.
+    this.skillsCache = null;
+    const skills = this.skills().filter((s) => s.userInvocable);
+    if (skills.length === 0) {
+      void vscode.window.showInformationMessage('DSH: no skills found for this workspace.');
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      skills.map((s) => ({
+        label: s.name,
+        description: s.source,
+        detail: s.description.length > 200 ? `${s.description.slice(0, 200)}…` : s.description,
+        skill: s,
+      })),
+      { placeHolder: 'Insert a skill reference', matchOnDetail: true },
+    );
+    if (!picked) return;
+    // A skill is invoked by the model reading the prompt, so the reference is plain
+    // text — there is no command channel to call it through.
+    this.post({ type: 'insert', text: `Use the \`${picked.skill.name}\` skill: ` });
+  }
+
   private pushState(): void {
     this.post({
       type: 'state',
@@ -446,6 +496,7 @@ export class ChatPanel {
       // Everything the agent advertises — model and reasoning effort today — so the
       // composer renders whatever this build exposes rather than a hardcoded list.
       options: this.connection.configOptions(this.sessionId).map(flattenOption),
+      skills: this.skills().filter((s) => s.userInvocable).length,
     });
   }
 
@@ -454,7 +505,7 @@ export class ChatPanel {
     if (typeof text !== 'string' || text.trim() === '') return;
     // Rendered as Markdown too: sendSelection wraps the selection in a code fence.
     this.post({ type: 'user', blocks: parseMarkdown(text) });
-    this.post({ type: 'state', busy: true, sessionId: this.sessionId, options: [] });
+    this.post({ type: 'state', busy: true, sessionId: this.sessionId, options: [], skills: this.skills().length });
     ChatPanel.syncBusyContext();
     try {
       const res = await this.connection.prompt(this.sessionId, text);

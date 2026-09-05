@@ -129,6 +129,32 @@ Every plausible spelling returned `-32602 Invalid params`; the right one came fr
 reading the agent's own handler. Worth stating plainly because the model picker
 never worked until a test exercised it.
 
+### Skills
+
+Skills *are* recoverable, and the difference is instructive: a slash command is a
+plugin-registered handler with no client-side equivalent, whereas a skill is a
+Markdown file in a documented location. So the catalog is rebuilt by scanning the
+roots `dsh-skill-filesystem` specifies:
+
+| Rank | Source | Path |
+|---|---|---|
+| 100 | `project-dsh` | `<projectRoot>/.dsh/skills` |
+| 200 | `project-agents` | `<projectRoot>/.agents/skills` |
+| 400 | `user-dsh` | `<dshHome>/skills` |
+| 500 | `user-agents` | `<agentsHome>/skills` |
+
+A skill is `<name>/SKILL.md` or a flat `<name>.md` at a root's **top level** — nested
+`**/SKILL.md` is deliberately not discovered — with YAML frontmatter carrying a
+required `name` and `description`, plus optional `disable-model-invocation` and
+`user-invocable`. Lower rank wins a name clash.
+
+The scan was validated against dsh itself: a session log records the catalog dsh
+splices into the conversation, and the disk scan reproduces it exactly.
+
+The composer's **Skills** button (hidden when a workspace has none) opens a
+searchable list and inserts a plain-text reference, since a skill is invoked by the
+model reading the prompt — there is no command channel to call one through.
+
 **Slash commands are not available over ACP and cannot be faked.** `dsh-commands`
 says it directly — "UI-less demo spines and ACP automation provide no command
 adapter and do not need it", and slash commands "ship with the `dsh` CLI and the Web

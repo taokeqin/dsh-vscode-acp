@@ -22,12 +22,15 @@ export type PanelInbound =
   | { type: 'cancel' }
   | { type: 'openPath'; path: string }
   | { type: 'openExternal'; url: string }
-  | { type: 'setOption'; id: string; value: string };
+  | { type: 'setOption'; id: string; value: string }
+  | { type: 'pickSkill' };
 
 /** Messages the extension host posts down to the webview. */
 export type PanelOutbound =
   /** `options` are the agent's advertised config options (model, reasoning effort). */
-  | { type: 'state'; busy: boolean; sessionId: string | null; options: ConfigOptionView[] }
+  | { type: 'state'; busy: boolean; sessionId: string | null; options: ConfigOptionView[]; skills: number }
+  /** Text to drop at the caret, e.g. a chosen skill reference. */
+  | { type: 'insert'; text: string }
   | { type: 'user'; blocks: Block[] }
   /**
    * A whole message, re-sent on every streaming chunk. Markdown is parsed in the
@@ -149,7 +152,15 @@ details.thought .body { margin-top: 6px; }
 }
 #input:focus { outline: 1px solid var(--vscode-focusBorder); }
 #bar { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 0.85em; }
-#opts { display: flex; gap: 4px; flex: none; }
+#opts { display: flex; gap: 4px; flex: none; align-items: center; }
+#skills {
+  display: none; flex: none; padding: 2px 7px; font-size: 0.95em; line-height: 1.35;
+  background: transparent; color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+  border-radius: 3px; cursor: pointer; opacity: 0.85;
+}
+#skills.on { display: block; }
+#skills:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); opacity: 1; }
 #opts select {
   font-family: inherit; font-size: 0.95em; padding: 1px 4px; max-width: 130px;
   color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
@@ -191,6 +202,7 @@ const sendBtn = document.getElementById('send');
 const stopBtn = document.getElementById('stop');
 const status = document.getElementById('status');
 const opts = document.getElementById('opts');
+const skillsBtn = document.getElementById('skills');
 
 let busy = false;
 let usage = null; // { used, size } once the agent has reported any
@@ -508,6 +520,7 @@ function renderOptions(list) {
 function setBusy(v) {
   busy = v;
   for (const sel of opts.querySelectorAll('select')) sel.disabled = v;
+  skillsBtn.disabled = v;
   sendBtn.disabled = v;
   stopBtn.hidden = !v;
   input.placeholder = v ? 'Agent is working…' : 'Ask the agent  (Enter to send, Shift+Enter for a newline)';
@@ -519,6 +532,21 @@ function send() {
   input.value = '';
   input.style.height = 'auto';
   vscode.postMessage({ type: 'send', text });
+}
+
+// Skills are picked host-side: their descriptions are long, and a native quick pick
+// is searchable where a narrow <select> would just truncate them.
+skillsBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickSkill' }));
+
+/** Drops text at the caret and keeps focus in the composer. */
+function insertAtCaret(text) {
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? start;
+  input.value = input.value.slice(0, start) + text + input.value.slice(end);
+  const pos = start + text.length;
+  input.setSelectionRange(pos, pos);
+  input.focus();
+  input.dispatchEvent(new Event('input'));
 }
 
 sendBtn.addEventListener('click', send);
@@ -538,8 +566,11 @@ window.addEventListener('message', (e) => {
     case 'state':
       setBusy(m.busy === true);
       renderOptions(m.options);
+      // Hidden entirely when the workspace and user config define no skills.
+      skillsBtn.classList.toggle('on', Number(m.skills) > 0);
       renderStatus();
       break;
+    case 'insert': insertAtCaret(String(m.text ?? '')); break;
     case 'user':    addUser(m.blocks); break;
     case 'message': renderMessage(m.role === 'thought' ? 'thought' : 'assistant', String(m.messageId), m.blocks, String(m.preview ?? '')); break;
     case 'tool':   upsertTool(m); break;
@@ -601,6 +632,7 @@ export function chatHtml(nonce: string): string {
   <textarea id="input" rows="2" placeholder="Ask the agent  (Enter to send, Shift+Enter for a newline)"></textarea>
   <div id="bar">
     <span id="opts"></span>
+    <button id="skills" title="Insert a skill reference">Skills</button>
     <span id="status"></span>
     <button id="stop" class="secondary" hidden>Stop</button>
     <button id="send">Send</button>
