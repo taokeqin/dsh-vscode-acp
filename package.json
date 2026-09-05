@@ -144,6 +144,15 @@
           "minimum": 10,
           "maximum": 2000,
           "markdownDescription": "Maximum restored transcript entries (most recent kept)."
+        },
+        "dshAgent.panelColumn": {
+          "type": "string",
+          "enum": [
+            "Beside",
+            "Active"
+          ],
+          "default": "Beside",
+          "markdownDescription": "Where a session tab opens. `Beside` puts the chat in the column next to your code; `Active` opens it in the current column."
         }
       }
     }

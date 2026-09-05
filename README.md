@@ -63,6 +63,10 @@ restored tab resumes that session.
 The sidebar is the session list — a launcher, not a transcript. Sessions with an open
 tab are marked, and the visible tab is highlighted, so it doubles as an overview.
 
+Tabs open in the column beside your code (`dshAgent.panelColumn`, `Beside` or
+`Active`). Files opened from a tool row go to column One, so code lands next to the
+chat rather than on top of it.
+
 This mirrors what Claude Code's own extension does: its bundle uses
 `createWebviewPanel` and `registerWebviewPanelSerializer`, it ships commands like
 *Open in New Tab*, *Add Session Tab to Group* and *Reopen Closed Session*, and it
@@ -79,8 +83,13 @@ a fresh window before any process has been spawned. It merges three sources:
 | Source | Why |
 |---|---|
 | `<dshHome>/sessions/<slug>/` | works with no agent running |
-| `session/list` when the agent is up | authoritative for resumability |
+| `session/list` when the agent is up | authoritative for resumability (scoped by `cwd`) |
 | sessions with an open tab | absent from `session/list`, which returns only **inactive** sessions |
+
+`session/list` is called **with a `cwd`** and the result is filtered again
+client-side. Without that argument the agent returns sessions for every workspace it
+has ever served — 27 across 11 directories on this machine — which would fill the
+sidebar with other projects' conversations.
 
 Delegated sub-agent runs are filtered out by `delegationDepth > 0` — the disk holds
 them alongside real conversations (3 of 28 here), and only depth 0 is something the

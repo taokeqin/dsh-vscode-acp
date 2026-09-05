@@ -60,11 +60,18 @@ await check('each session saw its own tool calls', () => {
   }
 });
 
-console.log('\n4. listing excludes ACTIVE sessions');
-const activeList = (await conn.listSessions()).map(s => s.sessionId);
+console.log('\n4. listing is scoped to this workspace and excludes ACTIVE sessions');
+const listed = await conn.listSessions();
 await check('neither open session is listed', () => {
-  assert.ok(!activeList.includes(a)); assert.ok(!activeList.includes(b));
+  const ids = listed.map(s => s.sessionId);
+  assert.ok(!ids.includes(a)); assert.ok(!ids.includes(b));
 });
+await check('no session from another workspace leaks in', () => {
+  const foreign = listed.filter(s => s.cwd !== ws);
+  assert.equal(foreign.length, 0,
+    `${foreign.length} foreign sessions, e.g. ${foreign[0]?.cwd}`);
+});
+console.log(`  (${listed.length} listed for this workspace; the agent knows many more)`);
 
 console.log('\n5. closing releases a session for reopening');
 await conn.closeSession(a);

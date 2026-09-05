@@ -119,6 +119,12 @@ export class ChatPanel {
     this.panel.title = title;
   }
 
+  /** Where a new session tab opens, from dshAgent.panelColumn. */
+  private static configuredColumn(): vscode.ViewColumn {
+    const pref = vscode.workspace.getConfiguration('dshAgent').get<string>('panelColumn', 'Beside');
+    return pref === 'Active' ? vscode.ViewColumn.Active : vscode.ViewColumn.Beside;
+  }
+
   /**
    * Creates a tab for a session that is already bound agent-side.
    * Callers own resume/new; this only builds the view.
@@ -129,7 +135,7 @@ export class ChatPanel {
     connection: AcpConnection,
     workspaceRoot: string,
     log: (line: string) => void,
-    column: vscode.ViewColumn = vscode.ViewColumn.Active,
+    column: vscode.ViewColumn = ChatPanel.configuredColumn(),
   ): ChatPanel {
     const panel = vscode.window.createWebviewPanel(CHAT_VIEW_TYPE, title, column, {
       enableScripts: true,
@@ -210,9 +216,11 @@ export class ChatPanel {
       return;
     }
     try {
+      // Column One, not Beside: the chat usually sits in the right-hand column, so
+      // "beside" would stack code on top of it instead of next to it.
       await vscode.window.showTextDocument(vscode.Uri.file(abs), {
         preview: true,
-        viewColumn: vscode.ViewColumn.Beside,
+        viewColumn: vscode.ViewColumn.One,
       });
     } catch (err) {
       void vscode.window.showWarningMessage(`DSH: cannot open ${rel}: ${String(err)}`);

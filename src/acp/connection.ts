@@ -4,6 +4,7 @@
 // "One connection can run several sessions at once, each independent." Each editor
 // tab binds one sessionId; this class multiplexes them over a single child process
 // and routes session/update notifications to whoever subscribed to that id.
+import { realpathSync } from 'node:fs';
 import { AcpClient } from './client';
 import type {
   ConfigOption,
@@ -17,6 +18,20 @@ import type {
 
 /** ACP protocol version this client implements. */
 const PROTOCOL_VERSION = 1;
+
+/**
+ * Compares absolute paths by physical identity where possible, matching how the
+ * agent's own cwd filter behaves. Falls back to string equality when a path no
+ * longer resolves (a deleted or unmounted workspace).
+ */
+function samePath(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
+  }
+}
 
 export interface AcpConnectionOptions {
   command: string;
@@ -189,13 +204,18 @@ export class AcpConnection {
   /**
    * Lists resumable sessions for this workspace.
    *
+   * The `cwd` argument matters: without it the agent returns sessions for EVERY
+   * workspace it has ever served — 27 across 11 directories on this machine — which
+   * would fill the sidebar with other projects' conversations. The result is also
+   * filtered client-side, so a build that ignores the parameter cannot leak them.
+   *
    * Measured agent behaviour: only INACTIVE sessions are returned. Sessions with an
    * open tab are active and therefore absent — callers must merge them back in.
    */
   async listSessions(): Promise<SessionSummary[]> {
     await this.ensureStarted();
-    const res = await this.request<ListSessionsResult>('session/list', {});
-    return res.sessions ?? [];
+    const res = await this.request<ListSessionsResult>('session/list', { cwd: this.opts.cwd });
+    return (res.sessions ?? []).filter((s) => typeof s.cwd !== 'string' || samePath(s.cwd, this.opts.cwd));
   }
 
   /**
