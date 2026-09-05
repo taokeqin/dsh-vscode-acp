@@ -7,17 +7,27 @@
 
 import type { Block } from '../markdown';
 
+/** One agent-advertised setting, flattened for a composer dropdown. */
+export interface ConfigOptionView {
+  id: string;
+  label: string;
+  current: string;
+  choices: { value: string; label: string }[];
+}
+
 /** Messages the webview posts up to the extension host. */
 export type PanelInbound =
   | { type: 'ready' }
   | { type: 'send'; text: string }
   | { type: 'cancel' }
   | { type: 'openPath'; path: string }
-  | { type: 'openExternal'; url: string };
+  | { type: 'openExternal'; url: string }
+  | { type: 'setOption'; id: string; value: string };
 
 /** Messages the extension host posts down to the webview. */
 export type PanelOutbound =
-  | { type: 'state'; busy: boolean; sessionId: string | null; model: string | null }
+  /** `options` are the agent's advertised config options (model, reasoning effort). */
+  | { type: 'state'; busy: boolean; sessionId: string | null; options: ConfigOptionView[] }
   | { type: 'user'; blocks: Block[] }
   /**
    * A whole message, re-sent on every streaming chunk. Markdown is parsed in the
@@ -138,8 +148,18 @@ details.thought .body { margin-top: 6px; }
   font-family: inherit; font-size: inherit;
 }
 #input:focus { outline: 1px solid var(--vscode-focusBorder); }
-#bar { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.85em; }
-#status { flex: 1; opacity: 0.7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#bar { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 0.85em; }
+#opts { display: flex; gap: 4px; flex: none; }
+#opts select {
+  font-family: inherit; font-size: 0.95em; padding: 1px 4px; max-width: 130px;
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  background: var(--vscode-dropdown-background, transparent);
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+  border-radius: 3px; cursor: pointer;
+}
+#opts select:hover { background: var(--vscode-list-hoverBackground); }
+#opts select:disabled { opacity: 0.5; cursor: default; }
+#status { flex: 1; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 button {
   background: var(--vscode-button-background); color: var(--vscode-button-foreground);
   border: none; padding: 4px 12px; border-radius: 3px; cursor: pointer; font-size: inherit;
@@ -161,10 +181,10 @@ const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const stopBtn = document.getElementById('stop');
 const status = document.getElementById('status');
+const opts = document.getElementById('opts');
 
 let busy = false;
 let usage = '';
-let model = '';
 // Streaming chunks arrive per messageId; keep the live node so text appends in place.
 const streams = new Map();
 const tools = new Map();
@@ -384,11 +404,51 @@ function addNotice(text, tone) {
 }
 
 function renderStatus() {
-  status.textContent = [model, usage].filter(Boolean).join('  ·  ');
+  status.textContent = usage;
+}
+
+/**
+ * Renders the agent's advertised settings as dropdowns in the composer.
+ *
+ * Rebuilt only when the option set actually changes, so an open dropdown is not
+ * torn out from under the pointer by an unrelated state push.
+ */
+let optionsKey = '';
+function renderOptions(list) {
+  const items = Array.isArray(list) ? list : [];
+  const key = JSON.stringify(items);
+  if (key === optionsKey) {
+    // Same options: just reflect the current values and busy state.
+    for (const sel of opts.querySelectorAll('select')) {
+      const item = items.find((o) => o.id === sel.dataset.id);
+      if (item) sel.value = item.current;
+      sel.disabled = busy;
+    }
+    return;
+  }
+  optionsKey = key;
+  opts.replaceChildren();
+  for (const o of items) {
+    if (!o || typeof o.id !== 'string') continue;
+    const sel = document.createElement('select');
+    sel.dataset.id = o.id;
+    sel.title = String(o.label ?? o.id);
+    sel.disabled = busy;
+    for (const c of o.choices || []) {
+      const opt = document.createElement('option');
+      opt.value = String(c.value);
+      opt.textContent = String(c.label);
+      sel.append(opt);
+    }
+    sel.value = String(o.current ?? '');
+    sel.onchange = () => vscode.postMessage({ type: 'setOption', id: o.id, value: sel.value });
+    opts.append(sel);
+  }
 }
 
 function setBusy(v) {
   busy = v;
+  for (const sel of opts.querySelectorAll('select')) sel.disabled = v;
   sendBtn.disabled = v;
   stopBtn.hidden = !v;
   input.placeholder = v ? 'Agent is working…' : 'Ask the agent  (Enter to send, Shift+Enter for a newline)';
@@ -418,7 +478,7 @@ window.addEventListener('message', (e) => {
   switch (m.type) {
     case 'state':
       setBusy(m.busy === true);
-      model = typeof m.model === 'string' ? m.model : '';
+      renderOptions(m.options);
       renderStatus();
       break;
     case 'user':    addUser(m.blocks); break;
@@ -479,6 +539,7 @@ export function chatHtml(nonce: string): string {
 <div id="composer">
   <textarea id="input" rows="2" placeholder="Ask the agent  (Enter to send, Shift+Enter for a newline)"></textarea>
   <div id="bar">
+    <span id="opts"></span>
     <span id="status"></span>
     <button id="stop" class="secondary" hidden>Stop</button>
     <button id="send">Send</button>

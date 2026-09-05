@@ -267,11 +267,17 @@ export class AcpConnection {
     this.client?.notify('session/cancel', { sessionId });
   }
 
-  /** Applies one advertised config option (e.g. switching the model). */
-  async setConfigOption(sessionId: string, optionId: string, value: string): Promise<void> {
+  /**
+   * Applies one advertised config option (model, reasoning effort).
+   *
+   * The parameter is `configId`, not `optionId` — read off the agent's own handler
+   * after every guessed spelling returned -32602 Invalid params. Guessing it meant
+   * the model picker never worked at all until a test exercised it.
+   */
+  async setConfigOption(sessionId: string, configId: string, value: string): Promise<void> {
     const res = await this.request<{ configOptions?: ConfigOption[] }>('session/set_config_option', {
       sessionId,
-      optionId,
+      configId,
       value,
     });
     if (res.configOptions) this.stateFor(sessionId).configOptions = res.configOptions;

@@ -12,7 +12,7 @@ import type { ConfigOption, SessionUpdate, ToolCallContent } from '../acp/types'
 import { loadTranscript } from '../history/store';
 import { inlineToText, parseMarkdown, type Block } from '../markdown';
 import { pickSessionColumn } from '../panelColumn';
-import { chatHtml, type PanelInbound, type PanelOutbound } from './html';
+import { chatHtml, type ConfigOptionView, type PanelInbound, type PanelOutbound } from './html';
 
 /** Tool arguments that name a file, in the order we prefer them. */
 const PATH_KEYS = ['file_path', 'path', 'filePath', 'notebook_path'];
@@ -54,17 +54,31 @@ function flattenToolContent(content: ToolCallContent[] | undefined): string {
     .join('\n');
 }
 
-function currentChoiceName(option: ConfigOption | undefined): string | null {
-  if (!option) return null;
-  const walk = (choices: ConfigOption['options']): string | null => {
-    for (const c of choices ?? []) {
-      if (c.value !== undefined && c.value === option.currentValue) return c.name ?? c.value;
-      const nested = walk(c.options);
-      if (nested) return nested;
+/**
+ * Flattens one advertised option into composer-dropdown shape.
+ *
+ * Choices arrive nested under provider groups, but a narrow dropdown reads better
+ * flat, so the group name is folded into the label only when there is more than one.
+ */
+function flattenOption(option: ConfigOption): ConfigOptionView {
+  const choices: { value: string; label: string; group: string }[] = [];
+  const walk = (list: ConfigOption['options'], group: string): void => {
+    for (const c of list ?? []) {
+      if (c.value !== undefined) choices.push({ value: c.value, label: c.name ?? c.value, group });
+      walk(c.options, c.group ?? group);
     }
-    return null;
   };
-  return walk(option.options) ?? option.currentValue ?? null;
+  walk(option.options, '');
+  const groups = new Set(choices.map((c) => c.group).filter((g) => g !== ''));
+  return {
+    id: option.id,
+    label: option.name ?? option.id,
+    current: option.currentValue ?? '',
+    choices: choices.map((c) => ({
+      value: c.value,
+      label: groups.size > 1 && c.group !== '' ? `${c.group} · ${c.label}` : c.label,
+    })),
+  };
 }
 
 /** State persisted with the tab so a window reload can rebind the same session. */
@@ -262,6 +276,9 @@ export class ChatPanel {
       case 'openExternal':
         await ChatPanel.openExternal(msg.url);
         break;
+      case 'setOption':
+        await this.setOption(msg.id, msg.value);
+        break;
     }
   }
 
@@ -419,12 +436,13 @@ export class ChatPanel {
   }
 
   private pushState(): void {
-    const model = this.connection.configOptions(this.sessionId).find((o) => o.id === 'model');
     this.post({
       type: 'state',
       busy: this.connection.busy(this.sessionId),
       sessionId: this.sessionId,
-      model: currentChoiceName(model),
+      // Everything the agent advertises — model and reasoning effort today — so the
+      // composer renders whatever this build exposes rather than a hardcoded list.
+      options: this.connection.configOptions(this.sessionId).map(flattenOption),
     });
   }
 
@@ -433,7 +451,7 @@ export class ChatPanel {
     if (typeof text !== 'string' || text.trim() === '') return;
     // Rendered as Markdown too: sendSelection wraps the selection in a code fence.
     this.post({ type: 'user', blocks: parseMarkdown(text) });
-    this.post({ type: 'state', busy: true, sessionId: this.sessionId, model: null });
+    this.post({ type: 'state', busy: true, sessionId: this.sessionId, options: [] });
     ChatPanel.syncBusyContext();
     try {
       const res = await this.connection.prompt(this.sessionId, text);
@@ -450,6 +468,19 @@ export class ChatPanel {
     }
   }
 
+  /** Applies a composer dropdown change to this session. */
+  private async setOption(id: string, value: string): Promise<void> {
+    if (typeof id !== 'string' || typeof value !== 'string') return;
+    try {
+      await this.connection.setConfigOption(this.sessionId, id, value);
+    } catch (err) {
+      this.log(`[acp] set ${id} failed: ${String(err)}`);
+      this.post({ type: 'notice', text: `Could not change ${id}: ${String(err)}`, tone: 'error' });
+    }
+    // Re-push either way: on failure the dropdown must snap back to the real value.
+    this.pushState();
+  }
+
   /** Lets the user pick a model for this session. */
   async pickModel(): Promise<void> {
     const option = this.connection.configOptions(this.sessionId).find((o) => o.id === 'model');
@@ -457,24 +488,16 @@ export class ChatPanel {
       void vscode.window.showInformationMessage('DSH: the agent advertises no model option.');
       return;
     }
-    const items: { label: string; description: string; value: string }[] = [];
-    const walk = (choices: ConfigOption['options'], group: string): void => {
-      for (const c of choices ?? []) {
-        if (c.value !== undefined) {
-          items.push({
-            label: `${c.value === option.currentValue ? '$(check) ' : ''}${c.name ?? c.value}`,
-            description: c.description ?? group,
-            value: c.value,
-          });
-        }
-        walk(c.options, c.group ?? group);
-      }
-    };
-    walk(option.options, '');
-    const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Select a model' });
+    const flat = flattenOption(option);
+    const picked = await vscode.window.showQuickPick(
+      flat.choices.map((c) => ({
+        label: `${c.value === flat.current ? '$(check) ' : ''}${c.label}`,
+        value: c.value,
+      })),
+      { placeHolder: 'Select a model' },
+    );
     if (!picked) return;
-    await this.connection.setConfigOption(this.sessionId, 'model', picked.value);
-    this.pushState();
+    await this.setOption('model', picked.value);
   }
 
   /** Reports that the agent process died. */

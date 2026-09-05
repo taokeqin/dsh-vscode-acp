@@ -60,6 +60,29 @@ await check('each session saw its own tool calls', () => {
   }
 });
 
+console.log('\n3b. advertised settings can be changed per session');
+const opts = conn.configOptions(a);
+console.log('  (advertises: ' + opts.map(o => o.id).join(', ') + ')');
+await check('model and reasoning_effort are both advertised', () => {
+  assert.ok(opts.find(o => o.id === 'model'), 'no model option');
+  assert.ok(opts.find(o => o.id === 'reasoning_effort'), 'no reasoning_effort option');
+});
+await check('reasoning_effort can actually be set', async () => {
+  const effort = conn.configOptions(a).find(o => o.id === 'reasoning_effort');
+  const flat = [];
+  const walk = (cs) => { for (const c of cs ?? []) { if (c.value !== undefined) flat.push(c.value); walk(c.options); } };
+  walk(effort.options);
+  const target = flat.find(v => v !== effort.currentValue);
+  await conn.setConfigOption(a, 'reasoning_effort', target);
+  const after = conn.configOptions(a).find(o => o.id === 'reasoning_effort');
+  assert.equal(after.currentValue, target, `wanted ${target}, got ${after.currentValue}`);
+});
+await check('changing one session does not touch the other', () => {
+  const ea = conn.configOptions(a).find(o => o.id === 'reasoning_effort');
+  const eb = conn.configOptions(b).find(o => o.id === 'reasoning_effort');
+  assert.notEqual(ea.currentValue, eb.currentValue);
+});
+
 console.log('\n4. listing is scoped to this workspace and excludes ACTIVE sessions');
 const listed = await conn.listSessions();
 await check('neither open session is listed', () => {

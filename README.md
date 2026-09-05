@@ -102,6 +102,26 @@ summary so a folded block still says what it was about. Tool rows show the argum
 that identifies the call — `bash ls -la …`, `read src/x.ts` — instead of the raw
 JSON blob.
 
+## Composer settings, and slash commands
+
+The composer carries a dropdown for every setting the agent advertises — today
+`model` (three routes) and `reasoning_effort` (Off/Low/High/Max) — read from
+`session/new` rather than hardcoded, so a build exposing more just renders more.
+Settings are per session: changing one tab does not affect another.
+
+The parameter for `session/set_config_option` is **`configId`**, not `optionId`.
+Every plausible spelling returned `-32602 Invalid params`; the right one came from
+reading the agent's own handler. Worth stating plainly because the model picker
+never worked until a test exercised it.
+
+**Slash commands are not available over ACP and cannot be faked.** `dsh-commands`
+says it directly — "UI-less demo spines and ACP automation provide no command
+adapter and do not need it", and slash commands "ship with the `dsh` CLI and the Web
+client". They are plugin-registered handlers that run "directly against the
+receiving agent without creating a model message", so they are not prompt templates
+a client could expand into text. Supporting them would need dsh to add a command
+adapter to the ACP surface.
+
 ## Transcript replay (best effort, `dshAgent.replayHistory`)
 
 `session/resume` restores the agent's context but replays nothing, so a resumed
