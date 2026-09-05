@@ -53,6 +53,21 @@ export function activate(context: vscode.ExtensionContext): void {
   const cwd = root ?? process.cwd();
   const cfg = vscode.workspace.getConfiguration('dshAgent');
 
+  /**
+   * Drives the `when` clause on the activity-bar container.
+   *
+   * The list lives in the secondary (right) sidebar by default so the left bar stays
+   * free for file navigation; the left copy is opt-in. The key must be set before
+   * any view resolves, which is why this extension activates onStartupFinished —
+   * otherwise enabling the setting would not surface the container until something
+   * else happened to activate us.
+   */
+  const applyActivityBarVisibility = (): void => {
+    const show = vscode.workspace.getConfiguration('dshAgent').get<boolean>('showInActivityBar', false);
+    void vscode.commands.executeCommand('setContext', 'dshAgent.showInActivityBar', show);
+  };
+  applyActivityBarVisibility();
+
   connection = new AcpConnection({
     command: cfg.get<string>('executablePath', 'dsh'),
     profile: cfg.get<string>('profile', 'acp'),
@@ -168,6 +183,10 @@ export function activate(context: vscode.ExtensionContext): void {
       void sessions?.refresh();
       void vscode.window.showInformationMessage('DSH: agent stopped. Open a session to restart it.');
     })),
+
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('dshAgent.showInActivityBar')) applyActivityBarVisibility();
+    }),
 
     { dispose: () => void connection?.dispose() },
   );
