@@ -220,7 +220,7 @@
     "watch": "tsc -w -p ./",
     "typecheck": "tsc --noEmit -p ./",
     "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies -o dsh-agent.vsix",
-    "test": "npm run compile && node test/locate.mjs && node test/session-order.mjs && node test/gui-launch.mjs && node test/smoke.mjs && node test/history.mjs"
+    "test": "npm run compile && node test/locate.mjs && node test/session-order.mjs && node test/panel-column.mjs && node test/gui-launch.mjs && node test/smoke.mjs && node test/history.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

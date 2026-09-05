@@ -10,6 +10,7 @@ import * as vscode from 'vscode';
 import type { AcpConnection } from '../acp/connection';
 import type { ConfigOption, SessionUpdate, ToolCallContent } from '../acp/types';
 import { loadTranscript } from '../history/store';
+import { pickSessionColumn } from '../panelColumn';
 import { chatHtml, type PanelInbound, type PanelOutbound } from './html';
 
 /** Tool arguments that name a file, in the order we prefer them. */
@@ -136,10 +137,30 @@ export class ChatPanel {
     this.panel.title = title;
   }
 
-  /** Where a new session tab opens, from dshAgent.panelColumn. */
+  /** Where the FIRST session tab opens, from dshAgent.panelColumn. */
   private static configuredColumn(): vscode.ViewColumn {
     const pref = vscode.workspace.getConfiguration('dshAgent').get<string>('panelColumn', 'Beside');
     return pref === 'Active' ? vscode.ViewColumn.Active : vscode.ViewColumn.Beside;
+  }
+
+  /**
+   * Which column a new session tab should open in.
+   *
+   * Sessions belong together, so the second one joins the first as a tab rather than
+   * splitting the editor again. `Beside` alone could not do that: it means "next to
+   * whatever is active", so opening a session from a session tab kept creating a new
+   * group each time. Reuse the column an existing tab already occupies — preferring
+   * the visible one — and fall back to the configured column only when none is open.
+   */
+  private static preferredColumn(): vscode.ViewColumn {
+    const activeId = ChatPanel.activeSessionId();
+    const active = activeId === null ? undefined : ChatPanel.open.get(activeId);
+    const others = [...ChatPanel.open.values()].map((p) => p.panel.viewColumn as number | undefined);
+    return pickSessionColumn(
+      active?.panel.viewColumn as number | undefined,
+      others,
+      ChatPanel.configuredColumn() as number,
+    ) as vscode.ViewColumn;
   }
 
   /**
@@ -152,7 +173,7 @@ export class ChatPanel {
     connection: AcpConnection,
     workspaceRoot: string,
     log: (line: string) => void,
-    column: vscode.ViewColumn = ChatPanel.configuredColumn(),
+    column: vscode.ViewColumn = ChatPanel.preferredColumn(),
   ): ChatPanel {
     const panel = vscode.window.createWebviewPanel(CHAT_VIEW_TYPE, title, column, {
       enableScripts: true,

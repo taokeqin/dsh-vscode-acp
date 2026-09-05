@@ -110,9 +110,15 @@ puts its own view and leaving the left activity bar to file navigation. There is
 setting to move it: VS Code already lets a view be dragged between the primary and
 secondary sidebars, so a container in both places would just be clutter.
 
-Tabs open in the column beside your code (`dshAgent.panelColumn`, `Beside` or
-`Active`). Files opened from a tool row go to column One, so code lands next to the
-chat rather than on top of it.
+The **first** session tab opens in the column beside your code
+(`dshAgent.panelColumn`, `Beside` or `Active`); every session after that joins that
+same group as a tab. `Beside` alone cannot express this — it means "next to whatever
+is active", so opening a session while a session tab was focused split the editor
+into yet another group each time. The rule lives in `src/panelColumn.ts` and is
+pinned by `test/panel-column.mjs`.
+
+Files opened from a tool row go to column One, so code lands next to the chat rather
+than on top of it.
 
 This mirrors what Claude Code's own extension does: its bundle uses
 `createWebviewPanel` and `registerWebviewPanelSerializer`, it ships commands like
