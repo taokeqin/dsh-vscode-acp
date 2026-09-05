@@ -1,0 +1,160 @@
+{
+  "name": "dsh-agent",
+  "displayName": "DSH Agent",
+  "description": "Chat with the DeepSeek Harness coding agent inside VS Code over ACP (Agent Client Protocol). Unofficial.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "The extension spawns the dsh agent, which reads and writes files in the workspace."
+    }
+  },
+  "activationEvents": [
+    "onView:dshAgent.chat"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dshAgent",
+          "title": "DSH",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "dshAgent": [
+        {
+          "id": "dshAgent.chat",
+          "name": "Agent",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "dshAgent.focus",
+        "title": "DSH: Focus Agent Panel"
+      },
+      {
+        "command": "dshAgent.newSession",
+        "title": "DSH: New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "dshAgent.pickSession",
+        "title": "DSH: Switch Session",
+        "icon": "$(history)"
+      },
+      {
+        "command": "dshAgent.cancel",
+        "title": "DSH: Cancel Current Turn",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "dshAgent.sendSelection",
+        "title": "DSH: Send Selection to Agent"
+      },
+      {
+        "command": "dshAgent.pickModel",
+        "title": "DSH: Select Model",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "dshAgent.showLogs",
+        "title": "DSH: Show Logs",
+        "icon": "$(output)"
+      },
+      {
+        "command": "dshAgent.restart",
+        "title": "DSH: Restart Agent Process",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "dshAgent.newSession",
+          "when": "view == dshAgent.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dshAgent.pickSession",
+          "when": "view == dshAgent.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "dshAgent.pickModel",
+          "when": "view == dshAgent.chat",
+          "group": "navigation@3"
+        },
+        {
+          "command": "dshAgent.cancel",
+          "when": "view == dshAgent.chat",
+          "group": "navigation@4"
+        },
+        {
+          "command": "dshAgent.showLogs",
+          "when": "view == dshAgent.chat",
+          "group": "navigation@5"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "dshAgent.sendSelection",
+          "when": "editorHasSelection",
+          "group": "9_dsh"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DSH Agent",
+      "properties": {
+        "dshAgent.executablePath": {
+          "type": "string",
+          "default": "dsh",
+          "scope": "machine",
+          "markdownDescription": "Path to the `dsh` executable. Machine-scoped on purpose: a workspace must not be able to point this at an arbitrary binary."
+        },
+        "dshAgent.profile": {
+          "type": "string",
+          "default": "acp",
+          "scope": "machine",
+          "markdownDescription": "The dsh profile to boot. Must speak ACP over stdio."
+        },
+        "dshAgent.resumeLatestSession": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "On open, resume the most recent persisted session for this workspace instead of creating a new one."
+        },
+        "dshAgent.showThoughts": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Render the agent's reasoning (`agent_thought_chunk`) in a collapsed block."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "typecheck": "tsc --noEmit -p ./",
+    "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies -o dsh-agent.vsix",
+    "test": "npm run compile && node test/smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.91.0",
+    "typescript": "^5.5.0"
+  }
+}
