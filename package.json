@@ -20,7 +20,8 @@
     }
   },
   "activationEvents": [
-    "onView:dshAgent.chat"
+    "onView:dshAgent.sessions",
+    "onWebviewPanel:dshAgent.chatPanel"
   ],
   "contributes": {
     "viewsContainers": {
@@ -35,8 +36,8 @@
     "views": {
       "dshAgent": [
         {
-          "id": "dshAgent.chat",
-          "name": "Agent",
+          "id": "dshAgent.sessions",
+          "name": "Sessions",
           "type": "webview"
         }
       ]
@@ -44,7 +45,7 @@
     "commands": [
       {
         "command": "dshAgent.focus",
-        "title": "DSH: Focus Agent Panel"
+        "title": "DSH: Focus Sessions"
       },
       {
         "command": "dshAgent.newSession",
@@ -52,9 +53,9 @@
         "icon": "$(add)"
       },
       {
-        "command": "dshAgent.pickSession",
-        "title": "DSH: Switch Session",
-        "icon": "$(history)"
+        "command": "dshAgent.refreshSessions",
+        "title": "DSH: Refresh Sessions",
+        "icon": "$(refresh)"
       },
       {
         "command": "dshAgent.cancel",
@@ -78,35 +79,25 @@
       {
         "command": "dshAgent.restart",
         "title": "DSH: Restart Agent Process",
-        "icon": "$(refresh)"
+        "icon": "$(debug-restart)"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "dshAgent.newSession",
-          "when": "view == dshAgent.chat",
+          "when": "view == dshAgent.sessions",
           "group": "navigation@1"
         },
         {
-          "command": "dshAgent.pickSession",
-          "when": "view == dshAgent.chat",
+          "command": "dshAgent.refreshSessions",
+          "when": "view == dshAgent.sessions",
           "group": "navigation@2"
         },
         {
-          "command": "dshAgent.pickModel",
-          "when": "view == dshAgent.chat",
-          "group": "navigation@3"
-        },
-        {
-          "command": "dshAgent.cancel",
-          "when": "view == dshAgent.chat",
-          "group": "navigation@4"
-        },
-        {
           "command": "dshAgent.showLogs",
-          "when": "view == dshAgent.chat",
-          "group": "navigation@5"
+          "when": "view == dshAgent.sessions",
+          "group": "navigation@3"
         }
       ],
       "editor/context": [
@@ -153,13 +144,6 @@
           "minimum": 10,
           "maximum": 2000,
           "markdownDescription": "Maximum restored transcript entries (most recent kept)."
-        },
-        "dshAgent.sessionTabs": {
-          "type": "number",
-          "default": 8,
-          "minimum": 0,
-          "maximum": 30,
-          "markdownDescription": "How many recent sessions to show as tabs above the chat. The current session is always included. Set to `0` to hide the strip and use **DSH: Switch Session** only."
         }
       }
     }

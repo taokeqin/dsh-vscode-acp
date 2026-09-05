@@ -1,11 +1,16 @@
 // src/extension.ts — activation, command registration, lifecycle.
+//
+// Shape: one agent process (AcpConnection) multiplexing N sessions; each session is
+// an editor tab (ChatPanel); the sidebar is a session list (SessionsViewProvider).
 import * as vscode from 'vscode';
-import { ChatViewProvider } from './panel/provider';
+import { AcpConnection } from './acp/connection';
+import { ChatPanel, CHAT_VIEW_TYPE } from './panel/chatPanel';
+import { SessionsViewProvider } from './panel/sessionsView';
 
-let provider: ChatViewProvider | null = null;
+let connection: AcpConnection | null = null;
+let sessions: SessionsViewProvider | null = null;
 let output: vscode.OutputChannel | null = null;
 
-/** Timestamped log line into the DSH Agent output channel. */
 function log(line: string): void {
   const d = new Date();
   const ts = [d.getHours(), d.getMinutes(), d.getSeconds()]
@@ -15,26 +20,53 @@ function log(line: string): void {
 }
 
 /**
- * The agent needs one absolute workspace root: ACP sessions are created against
- * an absolute cwd, and dsh supports exactly one primary workspace per session.
+ * The agent needs one absolute workspace root: ACP sessions are created against an
+ * absolute cwd, and dsh supports exactly one primary workspace per session.
  */
 function resolveRoot(): string | null {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+}
+
+/** Answers a permission prompt. Rarely fires: the acp profile auto-approves tool use. */
+async function askPermission(params: unknown): Promise<string | null> {
+  const p = params as { toolCall?: { title?: string }; options?: { optionId: string; name?: string }[] };
+  const options = p.options ?? [];
+  if (options.length === 0) return null;
+  const labels = options.map((o) => o.name ?? o.optionId);
+  const picked = await vscode.window.showWarningMessage(
+    `DSH agent wants to run: ${p.toolCall?.title ?? 'a tool'}`,
+    { modal: true },
+    ...labels,
+  );
+  if (picked === undefined) return null;
+  return options[labels.indexOf(picked)]?.optionId ?? null;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel('DSH Agent');
   const root = resolveRoot();
   if (root === null) {
-    // Without a folder there is no cwd to bind a session to; fail loudly at use
-    // time rather than spawning an agent rooted somewhere arbitrary.
-    log('[init] no workspace folder open; the agent panel stays inactive');
+    log('[init] no workspace folder open; the agent stays inactive');
   } else {
     log(`[init] workspace root: ${root}`);
   }
+  const cwd = root ?? process.cwd();
+  const cfg = vscode.workspace.getConfiguration('dshAgent');
 
-  provider = new ChatViewProvider(root ?? process.cwd(), log);
+  connection = new AcpConnection({
+    command: cfg.get<string>('executablePath', 'dsh'),
+    profile: cfg.get<string>('profile', 'acp'),
+    cwd,
+    log,
+    onExit: () => {
+      ChatPanel.notifyAllAgentExit();
+      void sessions?.refresh();
+    },
+    onPermission: askPermission,
+  });
+  sessions = new SessionsViewProvider(connection, cwd, log);
 
+  /** Guards commands that need a folder; without one there is no cwd to bind to. */
   const requireRoot = (fn: () => void | Promise<void>) => async (): Promise<void> => {
     if (resolveRoot() === null) {
       void vscode.window.showWarningMessage('DSH: open a folder before using the agent.');
@@ -43,29 +75,90 @@ export function activate(context: vscode.ExtensionContext): void {
     await fn();
   };
 
+  /** The tab the user is looking at, if any. */
+  const activePanel = (): ChatPanel | undefined => {
+    const id = ChatPanel.activeSessionId();
+    return id === null ? undefined : ChatPanel.get(id);
+  };
+
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('dshAgent.chat', provider, {
-      // Keep the transcript when the panel is hidden; the agent process outlives it anyway.
-      webviewOptions: { retainContextWhenHidden: true },
+    vscode.window.registerWebviewViewProvider('dshAgent.sessions', sessions),
+
+    // Restores session tabs after a window reload; the webview persisted its
+    // sessionId via setState, and each restored tab resumes that session.
+    vscode.window.registerWebviewPanelSerializer(CHAT_VIEW_TYPE, {
+      deserializeWebviewPanel: async (panel, state: { sessionId?: string } | undefined) => {
+        if (!connection) {
+          panel.dispose();
+          return;
+        }
+        await ChatPanel.restore(
+          panel,
+          state && typeof state.sessionId === 'string' ? { sessionId: state.sessionId } : undefined,
+          connection,
+          cwd,
+          log,
+        );
+        void sessions?.refresh();
+      },
     }),
+
     vscode.commands.registerCommand('dshAgent.focus', () =>
-      vscode.commands.executeCommand('dshAgent.chat.focus'),
+      vscode.commands.executeCommand('dshAgent.sessions.focus'),
     ),
-    vscode.commands.registerCommand('dshAgent.newSession', requireRoot(() => provider!.newSession())),
-    vscode.commands.registerCommand('dshAgent.pickSession', requireRoot(() => provider!.pickSession())),
-    vscode.commands.registerCommand('dshAgent.pickModel', requireRoot(() => provider!.pickModel())),
-    vscode.commands.registerCommand('dshAgent.cancel', () => provider?.cancel()),
-    vscode.commands.registerCommand('dshAgent.restart', requireRoot(() => provider!.restart())),
+    vscode.commands.registerCommand('dshAgent.newSession', requireRoot(() => sessions!.newSession())),
+    vscode.commands.registerCommand('dshAgent.refreshSessions', () => void sessions?.refresh()),
+    vscode.commands.registerCommand('dshAgent.pickModel', requireRoot(async () => {
+      const panel = activePanel();
+      if (!panel) {
+        void vscode.window.showInformationMessage('DSH: open a session tab first.');
+        return;
+      }
+      await panel.pickModel();
+    })),
+    vscode.commands.registerCommand('dshAgent.cancel', () => {
+      const id = ChatPanel.activeSessionId();
+      if (id !== null) connection?.cancel(id);
+    }),
     vscode.commands.registerCommand('dshAgent.sendSelection', requireRoot(async () => {
-      await vscode.commands.executeCommand('dshAgent.chat.focus');
-      provider!.sendSelection();
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.selection.isEmpty) {
+        void vscode.window.showInformationMessage('DSH: select some code first.');
+        return;
+      }
+      const rel = vscode.workspace.asRelativePath(editor.document.uri);
+      const start = editor.selection.start.line + 1;
+      const end = editor.selection.end.line + 1;
+      const body = editor.document.getText(editor.selection);
+      // ACP advertises embeddedContext: false, so context travels as plain text.
+      const text = `${rel}:${start}-${end}\n\n\`\`\`${editor.document.languageId}\n${body}\n\`\`\`\n`;
+
+      let panel = activePanel();
+      if (!panel) {
+        // No visible session: start one rather than dropping the selection.
+        await sessions!.newSession();
+        const id = ChatPanel.activeSessionId();
+        panel = id === null ? undefined : ChatPanel.get(id);
+      }
+      if (!panel) return;
+      panel.reveal();
+      await panel.send(text);
     })),
     vscode.commands.registerCommand('dshAgent.showLogs', () => output?.show()),
-    { dispose: () => void provider?.dispose() },
+    vscode.commands.registerCommand('dshAgent.restart', requireRoot(async () => {
+      ChatPanel.disposeAll();
+      await connection?.dispose();
+      void sessions?.refresh();
+      void vscode.window.showInformationMessage('DSH: agent stopped. Open a session to restart it.');
+    })),
+
+    { dispose: () => void connection?.dispose() },
   );
 }
 
 export async function deactivate(): Promise<void> {
-  await provider?.dispose();
-  provider = null;
+  ChatPanel.disposeAll();
+  await connection?.dispose();
+  connection = null;
+  sessions = null;
 }

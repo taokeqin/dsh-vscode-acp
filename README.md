@@ -52,19 +52,31 @@ with `dshAgent.replayHistory: false`.
 
 Restored entries render dimmed above a `restored — continuing this session` divider.
 
-## Sessions
+## Sessions: editor tabs, sidebar list
 
-A tab strip above the chat holds the most recently active sessions
-(`dshAgent.sessionTabs`, default 8; `0` hides it). Click to switch, `+` to start a
-new one. The current session is always in the strip even when it falls outside that
-window, and the active tab is scrolled into view when the strip overflows.
+Each session is a real `WebviewPanel`, so it is an ordinary editor tab. Closing,
+dragging, splitting, `Ctrl+Tab`, tab groups and *Reopen Closed Editor* are VS Code's
+behaviour rather than a webview reimplementation of it. Tabs survive a window reload
+through a `WebviewPanelSerializer`: the webview persists its `sessionId` and each
+restored tab resumes that session.
 
-A sidebar is too narrow for 20+ tabs, so the full list stays behind
-**DSH: Switch Session**.
+The sidebar is the session list — a launcher, not a transcript. Sessions with an open
+tab are marked, and the visible tab is highlighted, so it doubles as an overview.
 
-`session/list` deliberately omits the **active** session, so both the strip and the
-switcher add the current one back explicitly and mark it — otherwise the list would
-be missing exactly the session you are looking at.
+This mirrors what Claude Code's own extension does: its bundle uses
+`createWebviewPanel` and `registerWebviewPanelSerializer`, it ships commands like
+*Open in New Tab*, *Add Session Tab to Group* and *Reopen Closed Session*, and it
+declares a separate `claude-sessions-sidebar` list view.
+
+One agent process serves every tab. ACP allows this outright — "one connection can
+run several sessions at once, each independent" — and it is covered by the smoke
+test: two sessions prompt concurrently on one process, settle in parallel, and
+neither sees the other's messages or tool calls.
+
+`session/list` returns only **inactive** sessions, so every session with an open tab
+is absent from it and the list merges them back in — otherwise the sidebar would
+hide exactly the sessions being worked in. Closing a tab closes the session
+agent-side, which is what makes it listable and reopenable again.
 
 Entries are labelled with the session title (dsh writes the first user message as a
 fallback title, since the acp profile disables model-generated ones) and a relative
@@ -73,8 +85,8 @@ decompressing the whole log — 2 ms versus ~600 ms per session on the largest o
 here — and is cached per window. A session whose metadata cannot be read still
 appears, labelled `(no messages yet)`.
 
-A tab label only becomes meaningful after the first turn completes, since that is
-when dsh writes the title; the strip refreshes itself at that point.
+A title only exists after the first turn completes, since that is when dsh writes
+it; the list refreshes at that point.
 
 ### What the log actually looks like
 

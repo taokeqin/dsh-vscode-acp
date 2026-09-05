@@ -10,9 +10,7 @@ export type PanelInbound =
   | { type: 'ready' }
   | { type: 'send'; text: string }
   | { type: 'cancel' }
-  | { type: 'openPath'; path: string }
-  | { type: 'switchSession'; id: string }
-  | { type: 'newSession' };
+  | { type: 'openPath'; path: string };
 
 /** Messages the extension host posts down to the webview. */
 export type PanelOutbound =
@@ -24,15 +22,9 @@ export type PanelOutbound =
   | { type: 'notice'; text: string; tone: 'info' | 'error' }
   | { type: 'turnEnd'; stopReason: string }
   | { type: 'history'; entries: HistoryEntryView[]; truncated: boolean }
-  | { type: 'sessions'; tabs: SessionTabView[] }
-  | { type: 'clear' };
-
-/** One entry in the session tab strip. */
-export interface SessionTabView {
-  id: string;
-  title: string;
-  current: boolean;
-}
+  | { type: 'clear' }
+  /** Handed to the webview so it can persist the binding for reload restore. */
+  | { type: 'restoreState'; state: { sessionId: string } };
 
 /** A restored transcript entry, already flattened by the history store. */
 export type HistoryEntryView =
@@ -48,26 +40,6 @@ body {
   font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px);
   color: var(--vscode-foreground); background: var(--vscode-sideBar-background);
 }
-#tabs {
-  display: flex; align-items: stretch; gap: 2px; padding: 4px 4px 0;
-  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
-  border-bottom: 1px solid var(--vscode-panel-border); flex: none;
-}
-#tabs::-webkit-scrollbar { display: none; }
-#tabs:empty { display: none; }
-.tab {
-  flex: none; max-width: 150px; padding: 5px 10px; cursor: pointer;
-  font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  border: 1px solid transparent; border-bottom: none;
-  border-radius: 4px 4px 0 0; color: var(--vscode-descriptionForeground);
-  background: transparent;
-}
-.tab:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
-.tab.current {
-  background: var(--vscode-editor-background); color: var(--vscode-foreground);
-  border-color: var(--vscode-panel-border); font-weight: 600;
-}
-.tab.add { max-width: none; padding: 5px 9px; font-weight: 600; }
 #log { flex: 1; overflow-y: auto; padding: 10px 10px 4px; }
 .msg { margin-bottom: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 .msg.user {
@@ -137,7 +109,6 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 const SCRIPT = String.raw`
 const vscode = acquireVsCodeApi();
 const log = document.getElementById('log');
-const tabsEl = document.getElementById('tabs');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const stopBtn = document.getElementById('stop');
@@ -277,34 +248,6 @@ function renderHistory(entries, truncated) {
   log.scrollTop = log.scrollHeight;
 }
 
-// Renders the session tab strip. Tabs are the quick path between recent sessions;
-// the full list stays behind the DSH: Switch Session command, since a sidebar is too
-// narrow to hold every session as a tab.
-function renderTabs(tabs) {
-  tabsEl.replaceChildren();
-  if (!Array.isArray(tabs) || tabs.length === 0) return;
-  let currentEl = null;
-  for (const t of tabs) {
-    if (!t || typeof t.id !== 'string') continue;
-    const el = document.createElement('div');
-    el.className = 'tab' + (t.current ? ' current' : '');
-    el.textContent = String(t.title ?? '').replace(/\s+/g, ' ') || 'untitled';
-    el.title = el.textContent;
-    el.setAttribute('role', 'tab');
-    if (t.current) currentEl = el;
-    else el.onclick = () => vscode.postMessage({ type: 'switchSession', id: t.id });
-    tabsEl.append(el);
-  }
-  const add = document.createElement('div');
-  add.className = 'tab add';
-  add.textContent = '+';
-  add.title = 'New session';
-  add.onclick = () => vscode.postMessage({ type: 'newSession' });
-  tabsEl.append(add);
-  // Keep the active tab visible when the strip overflows.
-  if (currentEl) currentEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-}
-
 function addNotice(text, tone) {
   const wasBottom = atBottom();
   const el = document.createElement('div');
@@ -359,7 +302,6 @@ window.addEventListener('message', (e) => {
       usage = Math.round((m.used / m.size) * 100) + '% context (' + m.used.toLocaleString() + ')';
       renderStatus();
       break;
-    case 'sessions': renderTabs(m.tabs); break;
     case 'history':
       if (Array.isArray(m.entries) && m.entries.length > 0) renderHistory(m.entries, m.truncated === true);
       break;
@@ -368,6 +310,11 @@ window.addEventListener('message', (e) => {
       // Close every open stream so the next turn starts fresh nodes.
       streams.clear();
       if (m.stopReason && m.stopReason !== 'end_turn') addNotice('Turn ended: ' + m.stopReason, 'info');
+      break;
+    case 'restoreState':
+      // Persisted by VS Code and handed back to the panel serializer after a
+      // window reload, which is how a tab rebinds to its session.
+      try { vscode.setState(m.state); } catch {}
       break;
     case 'clear':
       log.replaceChildren();
@@ -402,7 +349,6 @@ export function chatHtml(nonce: string): string {
 <style>${STYLE}</style>
 </head>
 <body>
-<div id="tabs"></div>
 <div id="log"></div>
 <div id="composer">
   <textarea id="input" rows="2" placeholder="Ask the agent  (Enter to send, Shift+Enter for a newline)"></textarea>
