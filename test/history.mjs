@@ -48,7 +48,11 @@ await check('three entries in order', () => {
   assert.equal(sr.entries.length, 3);
   assert.deepEqual(sr.entries.map(e => e.kind), ['user', 'tool', 'assistant']);
 });
-await check('tool row carries its call label', () => assert.match(sr.entries[1].name, /^read /));
+await check('tool row keeps name and arguments separate', () => {
+  // The name used to have the raw JSON appended, which was unreadable in a row.
+  assert.equal(sr.entries[1].name, 'read');
+  assert.equal(sr.entries[1].detail, 'a.ts');
+});
 await check('assistant splits text and reasoning', () => {
   assert.equal(sr.entries[2].text, 'answer');
   assert.equal(sr.entries[2].reasoning, 'thinking');

@@ -144,6 +144,33 @@ async function decompressZstd(
   }
 }
 
+/**
+ * Turns a tool's JSON arguments into one readable line.
+ *
+ * The raw blob is unreadable in a narrow row — `bash {"command": "ls -la /Users/…",
+ * "description": "List files"}` — so the field that actually identifies the call is
+ * pulled out. Order matters: a bash call is its command, a file tool is its path.
+ */
+export function summariseToolArgs(argsJson: string): string {
+  const raw = typeof argsJson === 'string' ? argsJson.trim() : '';
+  if (raw === '') return '';
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return raw.replace(/\s+/g, ' ').slice(0, 120); // Not JSON: show it as-is.
+  }
+  if (parsed === null || typeof parsed !== 'object') return String(parsed).slice(0, 120);
+  const obj = parsed as Record<string, unknown>;
+  const preferred = ['command', 'file_path', 'path', 'filePath', 'notebook_path', 'pattern', 'query', 'url', 'prompt'];
+  for (const key of preferred) {
+    const v = obj[key];
+    if (typeof v === 'string' && v.trim() !== '') return v.replace(/\s+/g, ' ').slice(0, 120);
+  }
+  const first = Object.values(obj).find((v) => typeof v === 'string' && v.trim() !== '');
+  return typeof first === 'string' ? first.replace(/\s+/g, ' ').slice(0, 120) : '';
+}
+
 /** Joins the text of a content-block array, ignoring blocks of other types. */
 function textOfBlocks(blocks: unknown, type = 'text'): string {
   if (!Array.isArray(blocks)) return '';
@@ -168,8 +195,9 @@ function textOfBlocks(blocks: unknown, type = 'text'): string {
  */
 export function parseTranscript(jsonl: string, maxEntries: number): HistoryResult {
   const entries: HistoryEntry[] = [];
-  /** tool callId → invocation label, learned from tool/call which precedes its result. */
+  /** tool callId → name and argument summary, learned from the tool/call that precedes each result. */
   const toolNames = new Map<string, string>();
+  const toolArgs = new Map<string, string>();
   let scanned = 0;
 
   for (const line of jsonl.split('\n')) {
@@ -184,10 +212,8 @@ export function parseTranscript(jsonl: string, maxEntries: number): HistoryResul
     const type = rec.type;
     if (type === 'tool/call') {
       const d = rec.data as { callId?: string; name?: string; arguments?: string } | undefined;
-      if (d?.callId && typeof d.name === 'string') {
-        const args = typeof d.arguments === 'string' ? d.arguments.replace(/\s+/g, ' ').slice(0, 120) : '';
-        toolNames.set(d.callId, args === '' ? d.name : `${d.name} ${args}`);
-      }
+      if (d?.callId && typeof d.name === 'string') toolNames.set(d.callId, d.name);
+      if (d?.callId && typeof d.arguments === 'string') toolArgs.set(d.callId, summariseToolArgs(d.arguments));
       continue;
     }
     if (type === undefined || !SURFACE_TYPES.has(type)) continue;
@@ -212,7 +238,12 @@ export function parseTranscript(jsonl: string, maxEntries: number): HistoryResul
     for (const b of blocks) {
       const block = b as { type?: string; toolCallId?: string; content?: unknown; isError?: boolean };
       if (block.type !== 'tool-result' || typeof block.toolCallId !== 'string') continue;
-      const detail = textOfBlocks(block.content).replace(/\s+/g, ' ').trim().slice(0, 120);
+      // Prefer the call's arguments over its output: "read src/x.ts" says more about
+      // what happened than the first 120 characters of the file that came back.
+      const args = toolArgs.get(block.toolCallId) ?? '';
+      const detail = args !== ''
+        ? args
+        : textOfBlocks(block.content).replace(/\s+/g, ' ').trim().slice(0, 120);
       entries.push({
         kind: 'tool',
         id: block.toolCallId,

@@ -5,18 +5,26 @@
 // tool-call rows, and usage. DSH's richer surfaces (plans, todos, terminal views)
 // are deliberately absent from the ACP contract and cannot be shown here.
 
+import type { Block } from '../markdown';
+
 /** Messages the webview posts up to the extension host. */
 export type PanelInbound =
   | { type: 'ready' }
   | { type: 'send'; text: string }
   | { type: 'cancel' }
-  | { type: 'openPath'; path: string };
+  | { type: 'openPath'; path: string }
+  | { type: 'openExternal'; url: string };
 
 /** Messages the extension host posts down to the webview. */
 export type PanelOutbound =
   | { type: 'state'; busy: boolean; sessionId: string | null; model: string | null }
-  | { type: 'user'; text: string }
-  | { type: 'chunk'; role: 'assistant' | 'thought'; messageId: string; text: string }
+  | { type: 'user'; blocks: Block[] }
+  /**
+   * A whole message, re-sent on every streaming chunk. Markdown is parsed in the
+   * host and only this tree crosses the boundary, so the webview never handles an
+   * HTML string built from agent output.
+   */
+  | { type: 'message'; role: 'assistant' | 'thought'; messageId: string; blocks: Block[]; preview: string }
   | { type: 'tool'; id: string; title: string; status: string; detail?: string; path?: string }
   | { type: 'usage'; used: number; size: number }
   | { type: 'notice'; text: string; tone: 'info' | 'error' }
@@ -28,8 +36,8 @@ export type PanelOutbound =
 
 /** A restored transcript entry, already flattened by the history store. */
 export type HistoryEntryView =
-  | { kind: 'user'; text: string }
-  | { kind: 'assistant'; text: string; reasoning: string }
+  | { kind: 'user'; blocks: Block[] }
+  | { kind: 'assistant'; blocks: Block[]; reasoning: Block[]; preview: string }
   | { kind: 'tool'; id: string; name: string; detail: string; failed: boolean };
 
 const STYLE = `
@@ -41,7 +49,35 @@ body {
   color: var(--vscode-foreground); background: var(--vscode-sideBar-background);
 }
 #log { flex: 1; overflow-y: auto; padding: 10px 10px 4px; }
-.msg { margin-bottom: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.msg { margin-bottom: 12px; line-height: 1.6; word-break: break-word; }
+.msg > *:first-child { margin-top: 0; }
+.msg > *:last-child { margin-bottom: 0; }
+.msg p { margin: 0 0 8px; white-space: pre-wrap; }
+.msg h1, .msg h2, .msg h3, .msg h4, .msg h5, .msg h6 {
+  margin: 14px 0 6px; line-height: 1.3; font-weight: 600;
+}
+.msg h1 { font-size: 1.28em; } .msg h2 { font-size: 1.17em; } .msg h3 { font-size: 1.07em; }
+.msg h4, .msg h5, .msg h6 { font-size: 1em; }
+.msg ul, .msg ol { margin: 0 0 8px; padding-left: 1.4em; }
+.msg li { margin: 2px 0; white-space: pre-wrap; }
+.msg blockquote {
+  margin: 0 0 8px; padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--vscode-panel-border); opacity: 0.85; white-space: pre-wrap;
+}
+.msg hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 12px 0; }
+.msg code {
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 0.92em;
+  background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.18));
+  padding: 1px 4px; border-radius: 3px;
+}
+.msg pre {
+  margin: 0 0 8px; padding: 8px 10px; overflow-x: auto; border-radius: 4px;
+  background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.14));
+  border: 1px solid var(--vscode-panel-border);
+}
+.msg pre code { background: none; padding: 0; font-size: 0.9em; line-height: 1.45; }
+.msg a { color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: none; }
+.msg a:hover { text-decoration: underline; }
 .msg.user {
   background: var(--vscode-textBlockQuote-background);
   border-left: 2px solid var(--vscode-focusBorder);
@@ -49,11 +85,23 @@ body {
 }
 .msg.assistant { padding: 0 2px; }
 details.thought {
-  margin-bottom: 10px; font-size: 0.92em; opacity: 0.75;
+  margin-bottom: 10px; font-size: 0.9em; opacity: 0.62;
   border-left: 2px solid var(--vscode-panel-border); padding-left: 8px;
 }
-details.thought summary { cursor: pointer; user-select: none; opacity: 0.85; }
-details.thought .body { white-space: pre-wrap; margin-top: 4px; }
+details.thought[open] { opacity: 0.8; }
+details.thought summary {
+  cursor: pointer; user-select: none; list-style: none;
+  display: flex; gap: 6px; align-items: baseline;
+}
+details.thought summary::-webkit-details-marker { display: none; }
+details.thought summary::before { content: '▸'; flex: none; font-size: 0.85em; }
+details.thought[open] summary::before { content: '▾'; }
+/* One line of the reasoning, so a collapsed block still says what it was about. */
+details.thought .peek {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; font-style: italic;
+}
+details.thought[open] .peek { display: none; }
+details.thought .body { margin-top: 6px; }
 .tool {
   display: flex; gap: 7px; align-items: baseline;
   border: 1px solid var(--vscode-panel-border); border-radius: 4px;
@@ -124,38 +172,125 @@ const tools = new Map();
 function atBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 40; }
 function scroll(wasBottom) { if (wasBottom) log.scrollTop = log.scrollHeight; }
 
-function addUser(text) {
+// —— node tree → DOM ——
+// Every element is created explicitly and all text goes in via textContent. The host
+// sends a tree, never markup, so agent output cannot introduce elements this file
+// does not name.
+function buildInline(nodes, into) {
+  for (const n of nodes || []) {
+    if (!n || typeof n !== 'object') continue;
+    if (n.t === 'text') {
+      into.append(document.createTextNode(String(n.v ?? '')));
+    } else if (n.t === 'code') {
+      const el = document.createElement('code');
+      el.textContent = String(n.v ?? '');
+      into.append(el);
+    } else if (n.t === 'strong' || n.t === 'em') {
+      const el = document.createElement(n.t === 'strong' ? 'strong' : 'em');
+      buildInline(n.v, el);
+      into.append(el);
+    } else if (n.t === 'link') {
+      const el = document.createElement('a');
+      buildInline(n.v, el);
+      el.title = String(n.href ?? '');
+      // Navigating inside the webview is blocked by CSP anyway; hand the URL to the
+      // host, which re-checks the scheme before opening a browser.
+      el.onclick = () => vscode.postMessage({ type: 'openExternal', url: String(n.href ?? '') });
+      into.append(el);
+    }
+  }
+}
+
+function buildBlocks(blocks, into) {
+  for (const b of blocks || []) {
+    if (!b || typeof b !== 'object') continue;
+    if (b.t === 'p') {
+      const el = document.createElement('p');
+      buildInline(b.v, el);
+      into.append(el);
+    } else if (b.t === 'h') {
+      const lvl = Math.min(6, Math.max(1, Number(b.level) || 1));
+      const el = document.createElement('h' + lvl);
+      buildInline(b.v, el);
+      into.append(el);
+    } else if (b.t === 'code') {
+      const pre = document.createElement('pre');
+      const code = document.createElement('code');
+      code.textContent = String(b.v ?? '');
+      if (b.lang) code.dataset.lang = String(b.lang);
+      pre.append(code);
+      into.append(pre);
+    } else if (b.t === 'ul' || b.t === 'ol') {
+      const list = document.createElement(b.t);
+      if (b.t === 'ol' && Number(b.start) > 1) list.start = Number(b.start);
+      for (const item of b.items || []) {
+        const li = document.createElement('li');
+        buildInline(item, li);
+        list.append(li);
+      }
+      into.append(list);
+    } else if (b.t === 'quote') {
+      const el = document.createElement('blockquote');
+      buildInline(b.v, el);
+      into.append(el);
+    } else if (b.t === 'hr') {
+      into.append(document.createElement('hr'));
+    }
+  }
+}
+
+function addUser(blocks) {
   const wasBottom = atBottom();
   const el = document.createElement('div');
   el.className = 'msg user';
-  el.textContent = text;
+  buildBlocks(blocks, el);
   log.append(el);
   scroll(wasBottom);
 }
 
-function appendChunk(role, messageId, text) {
+/** Builds a collapsed reasoning block whose summary previews the first line. */
+function makeThought(blocks, preview, extraClass) {
+  const d = document.createElement('details');
+  d.className = 'thought' + (extraClass ? ' ' + extraClass : '');
+  const sm = document.createElement('summary');
+  const label = document.createElement('span');
+  label.textContent = 'Reasoning';
+  const peek = document.createElement('span');
+  peek.className = 'peek';
+  peek.textContent = preview ? '· ' + preview : '';
+  sm.append(label, peek);
+  const body = document.createElement('div');
+  body.className = 'body';
+  buildBlocks(blocks, body);
+  d.append(sm, body);
+  return { root: d, body, peek };
+}
+
+/**
+ * Renders a whole message. The host re-sends the full tree on every streaming
+ * chunk, so the node is rebuilt rather than appended to — which also means a
+ * partially-received code fence corrects itself once the closing fence arrives.
+ */
+function renderMessage(role, messageId, blocks, preview) {
   const wasBottom = atBottom();
   const key = role + ':' + messageId;
-  let node = streams.get(key);
-  if (!node) {
+  let entry = streams.get(key);
+  if (!entry) {
     if (role === 'thought') {
-      const d = document.createElement('details');
-      d.className = 'thought';
-      const s = document.createElement('summary');
-      s.textContent = 'Reasoning';
-      const b = document.createElement('div');
-      b.className = 'body';
-      d.append(s, b);
-      log.append(d);
-      node = b;
+      const t = makeThought([], '');
+      log.append(t.root);
+      entry = { target: t.body, peek: t.peek };
     } else {
-      node = document.createElement('div');
-      node.className = 'msg assistant';
-      log.append(node);
+      const el = document.createElement('div');
+      el.className = 'msg assistant';
+      log.append(el);
+      entry = { target: el, peek: null };
     }
-    streams.set(key, node);
+    streams.set(key, entry);
   }
-  node.textContent += text;
+  entry.target.replaceChildren();
+  buildBlocks(blocks, entry.target);
+  if (entry.peek) entry.peek.textContent = preview ? '· ' + preview : '';
   scroll(wasBottom);
 }
 
@@ -204,24 +339,16 @@ function renderHistory(entries, truncated) {
     if (e.kind === 'user') {
       const el = document.createElement('div');
       el.className = 'msg user restored';
-      el.textContent = String(e.text ?? '');
+      buildBlocks(e.blocks, el);
       frag.append(el);
     } else if (e.kind === 'assistant') {
-      if (e.reasoning) {
-        const d = document.createElement('details');
-        d.className = 'thought restored';
-        const sm = document.createElement('summary');
-        sm.textContent = 'Reasoning';
-        const b = document.createElement('div');
-        b.className = 'body';
-        b.textContent = String(e.reasoning);
-        d.append(sm, b);
-        frag.append(d);
+      if (Array.isArray(e.reasoning) && e.reasoning.length > 0) {
+        frag.append(makeThought(e.reasoning, e.preview, 'restored').root);
       }
-      if (e.text) {
+      if (Array.isArray(e.blocks) && e.blocks.length > 0) {
         const el = document.createElement('div');
         el.className = 'msg assistant restored';
-        el.textContent = String(e.text);
+        buildBlocks(e.blocks, el);
         frag.append(el);
       }
     } else if (e.kind === 'tool') {
@@ -243,7 +370,6 @@ function renderHistory(entries, truncated) {
   div.className = 'divider';
   div.textContent = 'restored — continuing this session';
   frag.append(div);
-  // History always goes at the top, above anything already posted.
   log.prepend(frag);
   log.scrollTop = log.scrollHeight;
 }
@@ -295,8 +421,8 @@ window.addEventListener('message', (e) => {
       model = typeof m.model === 'string' ? m.model : '';
       renderStatus();
       break;
-    case 'user':   addUser(String(m.text)); break;
-    case 'chunk':  appendChunk(m.role === 'thought' ? 'thought' : 'assistant', String(m.messageId), String(m.text)); break;
+    case 'user':    addUser(m.blocks); break;
+    case 'message': renderMessage(m.role === 'thought' ? 'thought' : 'assistant', String(m.messageId), m.blocks, String(m.preview ?? '')); break;
     case 'tool':   upsertTool(m); break;
     case 'usage':
       usage = Math.round((m.used / m.size) * 100) + '% context (' + m.used.toLocaleString() + ')';

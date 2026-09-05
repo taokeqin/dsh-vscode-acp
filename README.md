@@ -80,6 +80,28 @@ Using that key, a session tab carries:
 Show Logs and Restart Agent sit in the `…` overflow, which is where Claude Code puts
 its own secondary actions. On any other editor the title bar shows just the whale.
 
+## Rendering
+
+Agent output is Markdown, so `**bold**`, `## headings` and `` `code` `` used to show
+as literal text. It is now rendered — headings, fenced and inline code, lists,
+blockquotes, rules and http(s) links.
+
+**Markdown is parsed in the extension host; only a node tree crosses into the
+webview**, which builds DOM from it with `createElement` and `textContent`. No HTML
+string is ever constructed from agent output, so a message cannot introduce an
+element the panel does not name. A test asserts the panel document contains no
+`innerHTML` at all, and another parses the inline webview script, which ships as a
+string and is otherwise invisible to `tsc`.
+
+Streaming re-sends the whole message rather than appending deltas: Markdown only
+parses as a whole, so a half-received code fence corrects itself once the closing
+fence lands.
+
+Reasoning stays collapsed, dimmed, with the first line of it previewed on the
+summary so a folded block still says what it was about. Tool rows show the argument
+that identifies the call — `bash ls -la …`, `read src/x.ts` — instead of the raw
+JSON blob.
+
 ## Transcript replay (best effort, `dshAgent.replayHistory`)
 
 `session/resume` restores the agent's context but replays nothing, so a resumed

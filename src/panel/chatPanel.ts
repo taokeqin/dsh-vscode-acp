@@ -10,6 +10,7 @@ import * as vscode from 'vscode';
 import type { AcpConnection } from '../acp/connection';
 import type { ConfigOption, SessionUpdate, ToolCallContent } from '../acp/types';
 import { loadTranscript } from '../history/store';
+import { inlineToText, parseMarkdown, type Block } from '../markdown';
 import { pickSessionColumn } from '../panelColumn';
 import { chatHtml, type PanelInbound, type PanelOutbound } from './html';
 
@@ -31,6 +32,17 @@ function summariseInput(input: Record<string, unknown> | undefined, root: string
   if (!input) return '';
   const first = Object.values(input).find((v) => typeof v === 'string') as string | undefined;
   return first ? first.replace(/\s+/g, ' ').slice(0, 120) : '';
+}
+
+/** First line of a block tree, for a collapsed reasoning summary. */
+function previewOf(blocks: Block[]): string {
+  for (const b of blocks) {
+    const text =
+      b.t === 'code' ? b.v : 'v' in b && Array.isArray(b.v) ? inlineToText(b.v) : '';
+    const line = text.split('\n').map((l) => l.trim()).find((l) => l !== '');
+    if (line) return line.length > 90 ? `${line.slice(0, 90)}…` : line;
+  }
+  return '';
 }
 
 /** Flattens tool result content, which nests one level: { type, content: { text } }. */
@@ -72,6 +84,15 @@ export class ChatPanel {
   private readonly disposables: vscode.Disposable[] = [];
   private unsubscribe: (() => void) | null = null;
   private readonly toolTitles = new Map<string, string>();
+  /**
+   * Accumulated text per streaming message id.
+   *
+   * Chunks are deltas, but Markdown only parses correctly as a whole — a half-received
+   * fence or bold run is not yet valid. So the full text is kept, reparsed on each
+   * chunk, and the tree replaces the rendered node. Messages are small enough that
+   * reparsing costs nothing, and it makes partial syntax correct itself as it lands.
+   */
+  private readonly streamText = new Map<string, string>();
   private disposed = false;
 
   private constructor(
@@ -238,7 +259,21 @@ export class ChatPanel {
       case 'openPath':
         await this.openPath(msg.path);
         break;
+      case 'openExternal':
+        await ChatPanel.openExternal(msg.url);
+        break;
     }
+  }
+
+  /**
+   * Opens a link from rendered Markdown.
+   *
+   * The parser already rejects anything but http(s); this re-checks before handing a
+   * URL to the OS, because that is the boundary where getting it wrong matters.
+   */
+  private static async openExternal(url: string): Promise<void> {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return;
+    await vscode.env.openExternal(vscode.Uri.parse(url));
   }
 
   /**
@@ -298,7 +333,23 @@ export class ChatPanel {
       `[history] restored ${result.entries.length} entries from ${result.scanned} records` +
         `${result.truncated ? ' (older ones omitted)' : ''}`,
     );
-    this.post({ type: 'history', entries: result.entries, truncated: result.truncated });
+    this.post({
+      type: 'history',
+      entries: result.entries.map((e) => {
+        if (e.kind === 'user') return { kind: 'user' as const, blocks: parseMarkdown(e.text) };
+        if (e.kind === 'assistant') {
+          const reasoning = e.reasoning ? parseMarkdown(e.reasoning) : [];
+          return {
+            kind: 'assistant' as const,
+            blocks: parseMarkdown(e.text),
+            reasoning,
+            preview: previewOf(reasoning),
+          };
+        }
+        return e;
+      }),
+      truncated: result.truncated,
+    });
   }
 
   /** ACP session/update → panel messages. */
@@ -311,11 +362,18 @@ export class ChatPanel {
         if (typeof text !== 'string' || text === '') return;
         const isThought = u.sessionUpdate === 'agent_thought_chunk';
         if (isThought && !vscode.workspace.getConfiguration('dshAgent').get<boolean>('showThoughts', true)) return;
+        const role = isThought ? 'thought' : 'assistant';
+        // Thoughts and the answer can share a messageId, so the role is part of the key.
+        const key = `${role}:${chunk.messageId ?? 'anon'}`;
+        const full = (this.streamText.get(key) ?? '') + text;
+        this.streamText.set(key, full);
+        const blocks = parseMarkdown(full);
         this.post({
-          type: 'chunk',
-          role: isThought ? 'thought' : 'assistant',
+          type: 'message',
+          role,
           messageId: chunk.messageId ?? 'anon',
-          text,
+          blocks,
+          preview: isThought ? previewOf(blocks) : '',
         });
         return;
       }
@@ -373,11 +431,15 @@ export class ChatPanel {
   /** Sends one prompt and drives the busy state around the turn. */
   async send(text: string): Promise<void> {
     if (typeof text !== 'string' || text.trim() === '') return;
-    this.post({ type: 'user', text });
+    // Rendered as Markdown too: sendSelection wraps the selection in a code fence.
+    this.post({ type: 'user', blocks: parseMarkdown(text) });
     this.post({ type: 'state', busy: true, sessionId: this.sessionId, model: null });
     ChatPanel.syncBusyContext();
     try {
       const res = await this.connection.prompt(this.sessionId, text);
+      // A finished turn will never extend its messages again; drop the buffers so a
+      // long session does not accumulate every message it ever streamed.
+      this.streamText.clear();
       this.post({ type: 'turnEnd', stopReason: res.stopReason });
       ChatPanel.changeEmitter.fire(); // A title may exist now that a turn completed.
     } catch (err) {
