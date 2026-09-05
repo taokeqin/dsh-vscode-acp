@@ -52,17 +52,29 @@ with `dshAgent.replayHistory: false`.
 
 Restored entries render dimmed above a `restored — continuing this session` divider.
 
-## Session switcher
+## Sessions
 
-`session/list` deliberately omits the **active** session, so the switcher adds the
-current one back explicitly and marks it `$(check) current session` at the top —
-otherwise the list would be missing exactly the session you are looking at.
+A tab strip above the chat holds the most recently active sessions
+(`dshAgent.sessionTabs`, default 8; `0` hides it). Click to switch, `+` to start a
+new one. The current session is always in the strip even when it falls outside that
+window, and the active tab is scrolled into view when the strip overflows.
+
+A sidebar is too narrow for 20+ tabs, so the full list stays behind
+**DSH: Switch Session**.
+
+`session/list` deliberately omits the **active** session, so both the strip and the
+switcher add the current one back explicitly and mark it — otherwise the list would
+be missing exactly the session you are looking at.
 
 Entries are labelled with the session title (dsh writes the first user message as a
 fallback title, since the acp profile disables model-generated ones) and a relative
 timestamp, read from the on-disk log. Metadata uses a 64-frame budget rather than
-decompressing the whole log: 2 ms versus 320 ms per session on the largest one here.
-A session whose metadata cannot be read still lists, as `(no messages yet)`.
+decompressing the whole log — 2 ms versus ~600 ms per session on the largest one
+here — and is cached per window. A session whose metadata cannot be read still
+appears, labelled `(no messages yet)`.
+
+A tab label only becomes meaningful after the first turn completes, since that is
+when dsh writes the title; the strip refreshes itself at that point.
 
 ### What the log actually looks like
 

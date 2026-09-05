@@ -153,6 +153,13 @@
           "minimum": 10,
           "maximum": 2000,
           "markdownDescription": "Maximum restored transcript entries (most recent kept)."
+        },
+        "dshAgent.sessionTabs": {
+          "type": "number",
+          "default": 8,
+          "minimum": 0,
+          "maximum": 30,
+          "markdownDescription": "How many recent sessions to show as tabs above the chat. The current session is always included. Set to `0` to hide the strip and use **DSH: Switch Session** only."
         }
       }
     }

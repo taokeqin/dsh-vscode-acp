@@ -109,6 +109,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'openPath':
         await this.openPath(msg.path);
         break;
+      case 'switchSession':
+        await this.switchTo(msg.id);
+        break;
+      case 'newSession':
+        await this.newSession();
+        break;
     }
   }
 
@@ -183,6 +189,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     // Fire-and-forget: history must never delay or block the session becoming usable.
     if (session.resumed) void this.replayHistory(session.id);
+    void this.pushSessions();
     this.pushState();
   }
 
@@ -250,6 +257,98 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
     if (picked === undefined) return null;
     return options[labels.indexOf(picked)]?.optionId ?? null;
+  }
+
+  /**
+   * Session metadata cache, keyed by id.
+   *
+   * Each miss costs a file read plus a bounded zstd decode (~2 ms). Titles never
+   * change once written — dsh titles a session from its first user message — so a
+   * hit is safe to reuse for the life of the window.
+   */
+  private readonly metaCache = new Map<string, SessionMeta>();
+
+  private dshHome(): string {
+    return process.env.DSH_HOME ?? path.join(homedir(), '.dsh');
+  }
+
+  /** Metadata for one session, cached. Never throws. */
+  private async metaFor(sessionId: string): Promise<SessionMeta> {
+    const hit = this.metaCache.get(sessionId);
+    if (hit && hit.title !== null) return hit;
+    let meta: SessionMeta;
+    try {
+      meta = await loadSessionMeta(this.dshHome(), sessionId, this.workspaceRoot);
+    } catch {
+      meta = { sessionId, title: null, createdAt: null, updatedAt: null };
+    }
+    this.metaCache.set(sessionId, meta);
+    return meta;
+  }
+
+  /**
+   * Rebuilds the session tab strip.
+   *
+   * A sidebar cannot hold 20+ tabs, so the strip shows the most recently active
+   * ones (dshAgent.sessionTabs) with the current session always included even if it
+   * would fall outside that window; the full list stays in the switcher command.
+   * Best effort throughout: a session whose title cannot be read still gets a tab.
+   */
+  private async pushSessions(): Promise<void> {
+    const session = this.session;
+    if (!session) {
+      this.post({ type: 'sessions', tabs: [] });
+      return;
+    }
+    const limit = vscode.workspace.getConfiguration('dshAgent').get<number>('sessionTabs', 8);
+    if (limit <= 0) {
+      this.post({ type: 'sessions', tabs: [] });
+      return;
+    }
+    const currentId = session.id;
+    let others: { sessionId: string }[] = [];
+    try {
+      others = await session.listSessions();
+    } catch (err) {
+      this.log(`[session] tab strip list failed: ${String(err)}`);
+    }
+    const ids = [...(currentId ? [currentId] : []), ...others.map((o) => o.sessionId)];
+    const metas = await Promise.all(ids.map((id) => this.metaFor(id)));
+    // Most recently active first. A brand-new session has no log yet, so treat the
+    // current one as newest rather than letting it sink to the end.
+    const weight = (m: SessionMeta): number =>
+      m.updatedAt ?? (m.sessionId === currentId ? Date.now() : 0);
+    const sorted = metas.sort((a, b) => weight(b) - weight(a));
+    const shown = sorted.slice(0, limit);
+    if (currentId && !shown.some((m) => m.sessionId === currentId)) {
+      const current = sorted.find((m) => m.sessionId === currentId);
+      if (current) shown.splice(limit - 1, 1, current);
+    }
+    this.post({
+      type: 'sessions',
+      tabs: shown.map((m) => ({
+        id: m.sessionId,
+        title: m.title ?? 'new session',
+        current: m.sessionId === currentId,
+      })),
+    });
+  }
+
+  /** Binds the panel to another session and restores its transcript. */
+  private async switchTo(sessionId: string): Promise<void> {
+    const session = this.session;
+    if (!session || typeof sessionId !== 'string' || sessionId === session.id) return;
+    try {
+      await session.resume(sessionId);
+    } catch (err) {
+      this.log(`[session] switch failed: ${String(err)}`);
+      this.post({ type: 'notice', text: `Could not switch session: ${String(err)}`, tone: 'error' });
+      return;
+    }
+    this.post({ type: 'clear' });
+    await this.replayHistory(sessionId);
+    void this.pushSessions();
+    this.pushState();
   }
 
   /** ACP session/update → panel messages. */
@@ -337,6 +436,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const res = await session.prompt(text);
       this.post({ type: 'turnEnd', stopReason: res.stopReason });
+      // A session is titled from its first user message, so the tab label only
+      // becomes meaningful once a turn has completed.
+      if (session.id) {
+        this.metaCache.delete(session.id);
+        void this.pushSessions();
+      }
     } catch (err) {
       this.post({ type: 'notice', text: `Turn failed: ${String(err)}`, tone: 'error' });
     } finally {
@@ -352,6 +457,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.session.newSession();
     this.post({ type: 'clear' });
     this.post({ type: 'notice', text: `New session ${this.session.id?.slice(0, 8)}…`, tone: 'info' });
+    void this.pushSessions();
     this.pushState();
   }
 
@@ -368,7 +474,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const session = this.session;
     if (!session) return;
 
-    const dshHome = process.env.DSH_HOME ?? path.join(homedir(), '.dsh');
     let others: { sessionId: string }[] = [];
     try {
       others = await session.listSessions();
@@ -384,15 +489,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     // Metadata is a nicety; a failed read degrades to a bare id rather than an error.
-    const metas = await Promise.all(
-      ids.map(async (id): Promise<SessionMeta> => {
-        try {
-          return await loadSessionMeta(dshHome, id, this.workspaceRoot);
-        } catch {
-          return { sessionId: id, title: null, createdAt: null, updatedAt: null };
-        }
-      }),
-    );
+    const metas = await Promise.all(ids.map((id) => this.metaFor(id)));
     // Current first; the rest most-recently-active first.
     const rest = metas
       .filter((m) => m.sessionId !== currentId)
@@ -417,10 +514,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     if (!picked || picked.isCurrent) return; // Selecting the current session is a no-op.
 
-    await session.resume(picked.id);
-    this.post({ type: 'clear' });
-    void this.replayHistory(picked.id);
-    this.pushState();
+    await this.switchTo(picked.id);
   }
 
   async pickModel(): Promise<void> {
