@@ -60,6 +60,26 @@ await check('assistant splits text and reasoning', () => {
 await check('maxEntries keeps the tail', () => assert.deepEqual(parseTranscript(synth, 1).entries.map(e => e.kind), ['assistant']));
 await check('truncation is flagged', () => assert.equal(parseTranscript(synth, 1).truncated, true));
 
+console.log('\n3b. dsh splices scaffolding in as user/message records');
+const U = (kind, text) => JSON.stringify({
+  type: 'user/message', surfaceOp: 'append',
+  data: { content: [{ type: 'text', text }], source: kind === null ? {} : { kind } },
+});
+await check('real input is kept', () => {
+  const r = parseTranscript(U('user', 'hello'), 10);
+  assert.equal(r.entries.length, 1); assert.equal(r.entries[0].text, 'hello');
+});
+for (const kind of ['plugin', 'skill-catalog', 'goal', 'agent-message', 'subagent-settled']) {
+  await check(`${kind} is filtered out`, () =>
+    assert.equal(parseTranscript(U(kind, 'injected noise'), 10).entries.length, 0));
+}
+await check('a record with no source.kind is kept (unknown shape, do not hide it)', () =>
+  assert.equal(parseTranscript(U(null, 'ambiguous'), 10).entries.length, 1));
+await check('the runtime-context block specifically is dropped', () => {
+  const text = 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.';
+  assert.equal(parseTranscript(U('plugin', text), 10).entries.length, 0);
+});
+
 console.log('\n4. real on-disk sessions');
 const root = join(DSH_HOME, 'sessions');
 const real = [];

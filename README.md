@@ -194,6 +194,13 @@ Measured, because none of this is documented:
 - Records carry `type`, `seq`, `time`, `data`. Exactly three types are marked with
   `surfaceOp` — `user/message`, `assistant/message`, `tool/result` — and those are
   the visible transcript. The other 29 types are internal bookkeeping.
+- **`user/message` does not mean the person typed it.** dsh splices scaffolding into
+  the conversation under the same record type, discriminated by `data.source.kind`.
+  Across 55 sessions here: `user` (66), `plugin` (43), `skill-catalog` (36),
+  `goal` (25), `agent-message` (5), `subagent-settled` (4). Only `user` is real
+  input; the rest rendered as walls of runtime context and skill catalogs the user
+  never wrote, so only `user` is kept. A record with no `source.kind` is kept too —
+  that is a shape we do not recognise, and hiding a real message is the worse error.
 - `tool/call` has no `surfaceOp` but supplies the tool label, paired by `callId`.
 - The log also contains `todo/write`, `goal/change`, and `approval/*` records —
   surfaces ACP deliberately withholds. Not rendered today; available if wanted.

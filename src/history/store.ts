@@ -42,6 +42,21 @@ const MAX_FRAMES = 500_000;
 const SURFACE_TYPES = new Set(['user/message', 'assistant/message', 'tool/result']);
 
 /**
+ * dsh splices scaffolding into the conversation as `user/message` records, so the
+ * type alone does not mean "the person typed this". Across 55 sessions on this
+ * machine the `data.source.kind` values were:
+ *
+ *   user (66)  plugin (43)  skill-catalog (36)  goal (25)
+ *   agent-message (5)  subagent-settled (4)
+ *
+ * Only `user` is real input; the rest is runtime context, the skill catalog, goal
+ * injections and sub-agent plumbing, which rendered as walls of text the user never
+ * wrote. A record with no `source.kind` at all is kept: that would be a shape we do
+ * not recognise, and hiding a real message is worse than showing an odd one.
+ */
+const REAL_USER_SOURCE = 'user';
+
+/**
  * Locates a session's log directory.
  *
  * Primary strategy is a scan of `<dshHome>/sessions/<slug>/<sessionId>`: we already
@@ -219,7 +234,10 @@ export function parseTranscript(jsonl: string, maxEntries: number): HistoryResul
     if (type === undefined || !SURFACE_TYPES.has(type)) continue;
 
     if (type === 'user/message') {
-      const text = textOfBlocks((rec.data as { content?: unknown } | undefined)?.content);
+      const data = rec.data as { content?: unknown; source?: { kind?: unknown } } | undefined;
+      const sourceKind = data?.source?.kind;
+      if (typeof sourceKind === 'string' && sourceKind !== REAL_USER_SOURCE) continue;
+      const text = textOfBlocks(data?.content);
       if (text.trim() !== '') entries.push({ kind: 'user', text });
       continue;
     }
