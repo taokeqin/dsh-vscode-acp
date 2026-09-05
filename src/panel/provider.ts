@@ -3,8 +3,10 @@
 // Translation layer only: ACP session/update shapes in, PanelOutbound messages out.
 // Nothing here talks JSON-RPC directly; nothing in acp/ knows about vscode.
 import { randomBytes } from 'node:crypto';
+import { homedir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { loadTranscript } from '../history/store';
 import { AgentSession } from '../acp/session';
 import type { ConfigOption, SessionUpdate, ToolCallContent } from '../acp/types';
 import { chatHtml, type PanelInbound, type PanelOutbound } from './html';
@@ -167,7 +169,54 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       text: `Connected to ${session.agentName}. Session ${session.id?.slice(0, 8)}…`,
       tone: 'info',
     });
+    // Fire-and-forget: history must never delay or block the session becoming usable.
+    if (session.resumed) void this.replayHistory(session.id);
     this.pushState();
+  }
+
+  /**
+   * Restores a resumed session's transcript from disk.
+   *
+   * Strictly best-effort and strictly optional: ACP replays no history, and dsh's
+   * on-disk log is an internal format with no compatibility promise. Every failure
+   * is logged and swallowed — the panel just stays empty and chat is unaffected.
+   * It never throws and is never awaited by the session path.
+   */
+  private async replayHistory(sessionId: string | null): Promise<void> {
+    if (sessionId === null) return;
+    const cfg = vscode.workspace.getConfiguration('dshAgent');
+    if (!cfg.get<boolean>('replayHistory', true)) {
+      this.log('[history] disabled by dshAgent.replayHistory');
+      return;
+    }
+    let result: Awaited<ReturnType<typeof loadTranscript>>;
+    try {
+      result = await loadTranscript({
+        dshHome: process.env.DSH_HOME ?? path.join(homedir(), '.dsh'),
+        sessionId,
+        cwd: this.workspaceRoot,
+        maxEntries: cfg.get<number>('replayMaxEntries', 200),
+      });
+    } catch (err) {
+      // loadTranscript is written not to throw; this guard means a future format
+      // change can never take the panel down with it.
+      this.log(`[history] unexpected failure, continuing without history: ${String(err)}`);
+      return;
+    }
+    if (!result.ok) {
+      this.log(`[history] not restored: ${result.reason}`);
+      this.post({
+        type: 'notice',
+        text: 'Resumed this session. Its earlier messages could not be restored — see DSH: Show Logs.',
+        tone: 'info',
+      });
+      return;
+    }
+    this.log(
+      `[history] restored ${result.entries.length} entries from ${result.scanned} records` +
+        `${result.truncated ? ' (older ones omitted)' : ''}`,
+    );
+    this.post({ type: 'history', entries: result.entries, truncated: result.truncated });
   }
 
   /**
@@ -313,11 +362,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!picked) return;
     await this.session.resume(picked.id);
     this.post({ type: 'clear' });
-    this.post({
-      type: 'notice',
-      text: 'Resumed. The agent kept its context, but ACP does not replay the transcript, so this panel starts empty.',
-      tone: 'info',
-    });
+    void this.replayHistory(picked.id);
     this.pushState();
   }
 

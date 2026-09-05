@@ -21,7 +21,14 @@ export type PanelOutbound =
   | { type: 'usage'; used: number; size: number }
   | { type: 'notice'; text: string; tone: 'info' | 'error' }
   | { type: 'turnEnd'; stopReason: string }
+  | { type: 'history'; entries: HistoryEntryView[]; truncated: boolean }
   | { type: 'clear' };
+
+/** A restored transcript entry, already flattened by the history store. */
+export type HistoryEntryView =
+  | { kind: 'user'; text: string }
+  | { kind: 'assistant'; text: string; reasoning: string }
+  | { kind: 'tool'; id: string; name: string; detail: string; failed: boolean };
 
 const STYLE = `
 :root { color-scheme: light dark; }
@@ -62,6 +69,14 @@ details.thought .body { white-space: pre-wrap; margin-top: 4px; }
 .dot.failed      { background: var(--vscode-charts-red, #f14c4c); }
 .dot.pending     { background: var(--vscode-descriptionForeground); }
 @keyframes pulse { 50% { opacity: 0.25; } }
+.restored { opacity: 0.82; }
+.divider {
+  display: flex; align-items: center; gap: 8px; margin: 4px 0 14px;
+  font-size: 0.8em; opacity: 0.55; text-transform: uppercase; letter-spacing: 0.06em;
+}
+.divider::before, .divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--vscode-panel-border);
+}
 .notice { font-size: 0.9em; padding: 5px 8px; border-radius: 3px; margin-bottom: 10px; }
 .notice.info  { background: var(--vscode-textBlockQuote-background); opacity: 0.85; }
 .notice.error { background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-inputValidation-errorBorder); }
@@ -171,6 +186,66 @@ function upsertTool(m) {
   scroll(wasBottom);
 }
 
+// Renders a restored transcript in one pass, then a divider marking where the
+// live session begins. Restored content is dimmed so it reads as context, not
+// as something that just happened.
+function renderHistory(entries, truncated) {
+  const frag = document.createDocumentFragment();
+  if (truncated) {
+    const d = document.createElement('div');
+    d.className = 'divider';
+    d.textContent = 'earlier messages omitted';
+    frag.append(d);
+  }
+  for (const e of entries) {
+    if (!e || typeof e !== 'object') continue;
+    if (e.kind === 'user') {
+      const el = document.createElement('div');
+      el.className = 'msg user restored';
+      el.textContent = String(e.text ?? '');
+      frag.append(el);
+    } else if (e.kind === 'assistant') {
+      if (e.reasoning) {
+        const d = document.createElement('details');
+        d.className = 'thought restored';
+        const sm = document.createElement('summary');
+        sm.textContent = 'Reasoning';
+        const b = document.createElement('div');
+        b.className = 'body';
+        b.textContent = String(e.reasoning);
+        d.append(sm, b);
+        frag.append(d);
+      }
+      if (e.text) {
+        const el = document.createElement('div');
+        el.className = 'msg assistant restored';
+        el.textContent = String(e.text);
+        frag.append(el);
+      }
+    } else if (e.kind === 'tool') {
+      const row = document.createElement('div');
+      row.className = 'tool restored';
+      const dot = document.createElement('span');
+      dot.className = 'dot ' + (e.failed ? 'failed' : 'completed');
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = String(e.name ?? 'tool');
+      const arg = document.createElement('span');
+      arg.className = 'arg';
+      arg.textContent = String(e.detail ?? '');
+      row.append(dot, name, arg);
+      frag.append(row);
+    }
+  }
+  const div = document.createElement('div');
+  div.className = 'divider';
+  div.textContent = 'restored — continuing this session';
+  frag.append(div);
+  // History always goes at the top, above anything already posted.
+  log.prepend(frag);
+  log.scrollTop = log.scrollHeight;
+}
+
 function addNotice(text, tone) {
   const wasBottom = atBottom();
   const el = document.createElement('div');
@@ -224,6 +299,9 @@ window.addEventListener('message', (e) => {
     case 'usage':
       usage = Math.round((m.used / m.size) * 100) + '% context (' + m.used.toLocaleString() + ')';
       renderStatus();
+      break;
+    case 'history':
+      if (Array.isArray(m.entries) && m.entries.length > 0) renderHistory(m.entries, m.truncated === true);
       break;
     case 'notice': addNotice(String(m.text), m.tone); break;
     case 'turnEnd':

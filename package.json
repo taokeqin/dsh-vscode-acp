@@ -141,6 +141,18 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Render the agent's reasoning (`agent_thought_chunk`) in a collapsed block."
+        },
+        "dshAgent.replayHistory": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "On resume, rebuild the transcript from dsh's on-disk session log. This reads dsh's **internal** file format, which carries no compatibility promise: if it fails the panel simply starts empty, chat is unaffected, and the reason is written to the DSH Agent output channel."
+        },
+        "dshAgent.replayMaxEntries": {
+          "type": "number",
+          "default": 200,
+          "minimum": 10,
+          "maximum": 2000,
+          "markdownDescription": "Maximum restored transcript entries (most recent kept)."
         }
       }
     }
@@ -150,7 +162,7 @@
     "watch": "tsc -w -p ./",
     "typecheck": "tsc --noEmit -p ./",
     "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies -o dsh-agent.vsix",
-    "test": "npm run compile && node test/smoke.mjs"
+    "test": "npm run compile && node test/smoke.mjs && node test/history.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

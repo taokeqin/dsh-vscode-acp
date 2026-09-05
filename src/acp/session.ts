@@ -56,11 +56,18 @@ export class AgentSession {
   private configOptions: ConfigOption[] = [];
   private promptInFlight = false;
   private initResult: InitializeResult | null = null;
+  /** True when start() bound an existing session rather than creating one. */
+  private resumedExisting = false;
 
   constructor(private readonly opts: AgentSessionOptions) {}
 
   get id(): string | null {
     return this.sessionId;
+  }
+
+  /** Whether the bound session came from session/resume (so its transcript is on disk). */
+  get resumed(): boolean {
+    return this.resumedExisting;
   }
 
   get options(): ConfigOption[] {
@@ -126,6 +133,7 @@ export class AgentSession {
     );
 
     const resumed = this.opts.resumeLatest ? await this.tryResumeLatest() : null;
+    this.resumedExisting = resumed !== null;
     if (resumed === null) await this.newSession();
   }
 
@@ -196,6 +204,7 @@ export class AgentSession {
     });
     this.sessionId = res.sessionId;
     this.configOptions = res.configOptions ?? [];
+    this.resumedExisting = false;
     this.opts.log(`[acp] new session ${res.sessionId}`);
     return res.sessionId;
   }
@@ -222,6 +231,7 @@ export class AgentSession {
     });
     this.sessionId = sessionId;
     this.configOptions = res.configOptions ?? [];
+    this.resumedExisting = true;
   }
 
   /** Sends one text prompt and resolves when the turn settles. */

@@ -36,6 +36,49 @@ elicitation". That boundary is real and permanent, not a gap to be filled later.
 | Session list / resume / close | Multiple workspace roots per session |
 | Model switching, context usage | Client-side filesystem delegation |
 
+Transcript replay is recovered separately — see below.
+
+## Transcript replay (best effort, `dshAgent.replayHistory`)
+
+`session/resume` restores the agent's context but replays nothing, so a resumed
+panel would start blank while the agent still remembers the conversation. This
+extension rebuilds the transcript by reading dsh's on-disk session log.
+
+**This reads dsh's internal format and carries no compatibility promise.** It is
+built strictly as a sidecar: every failure returns a reason, the reason goes to the
+`DSH Agent` output channel, the panel shows a one-line notice, and chat continues
+unaffected. It never throws and is never awaited by the session path. Turn it off
+with `dshAgent.replayHistory: false`.
+
+Restored entries render dimmed above a `restored — continuing this session` divider.
+
+### What the log actually looks like
+
+Measured, because none of this is documented:
+
+- Path: `~/.dsh/sessions/<slug>/<sessionId>/session.jsonl.zstd`, where `<slug>` is
+  the cwd's path segments joined by `-` and wrapped in `--`. We locate a session by
+  scanning for its id rather than trusting that rule.
+- Records carry `type`, `seq`, `time`, `data`. Exactly three types are marked with
+  `surfaceOp` — `user/message`, `assistant/message`, `tool/result` — and those are
+  the visible transcript. The other 29 types are internal bookkeeping.
+- `tool/call` has no `surfaceOp` but supplies the tool label, paired by `callId`.
+- The log also contains `todo/write`, `goal/change`, and `approval/*` records —
+  surfaces ACP deliberately withholds. Not rendered today; available if wanted.
+
+### The multi-frame trap
+
+dsh appends **one zstd frame per write**, so a real log is a concatenated
+multi-frame stream — 9014 frames in the largest session here. **Node's zstd
+bindings decode only the first frame and stop**: both `zstdDecompressSync` and
+`createZstdDecompress` returned 202 bytes of a 6.3 MB log, which silently looks
+like an empty transcript rather than an error.
+
+The decoder therefore walks frames itself, advancing by the stream's `bytesWritten`
+after each one. Measured 549 ms for the 3.2 MB / 9014-frame worst case (the `zstd`
+CLI does it in 63 ms and is kept as a fallback for hosts whose Node predates zstd,
+added in 22.15). Output is byte-identical to the CLI.
+
 ## Security notes
 
 **The agent writes files with no prompt.** Measured: asking the agent to create a
@@ -77,7 +120,8 @@ Facts this client depends on, each verified against dsh `0.1.2-rc.1`
 ```sh
 npm install
 npm run compile      # tsc
-npm test             # end-to-end smoke test against a real `dsh --profile acp`
+npm test             # ACP smoke test against a real agent + transcript parsing
+                     # against every session in ~/.dsh/sessions
 npm run package      # dsh-agent.vsix
 ```
 
@@ -85,6 +129,8 @@ npm run package      # dsh-agent.vsix
 
 ## Status
 
-Working slice: chat, streaming, tool rows, session resume/switch, model picker,
-cancel, send-selection. Not done: images, MCP server mounts, transcript rendering
-from disk, prompt queueing.
+Working slice: chat, streaming, tool rows, session resume/switch, transcript
+replay, model picker, cancel, send-selection.
+
+Not done: images, MCP server mounts, prompt queueing, rendering todos/plans from
+the on-disk log.
