@@ -25,7 +25,14 @@ export function relativeTime(ms: number | null): string {
 }
 
 export class SessionsViewProvider implements vscode.WebviewViewProvider {
-  private view: vscode.WebviewView | null = null;
+  /**
+   * Every view showing this list.
+   *
+   * The same provider instance is registered for both the activity-bar and the
+   * secondary-sidebar view, so one list can be mounted on the left and the right at
+   * once and both stay in sync from a single refresh.
+   */
+  private readonly views = new Set<vscode.WebviewView>();
   /**
    * Session metadata cache. A miss costs a file read plus a bounded zstd decode
    * (~2 ms); titles never change once dsh writes them, so hits are safe to reuse.
@@ -42,17 +49,18 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
-    this.view = view;
+    this.views.add(view);
     view.webview.options = { enableScripts: true };
     view.webview.html = sessionsHtml(randomBytes(16).toString('base64'));
     view.webview.onDidReceiveMessage((msg: SessionsInbound) => void this.onMessage(msg));
     view.onDidDispose(() => {
-      this.view = null;
+      this.views.delete(view);
     });
   }
 
+  /** Broadcasts to every mounted view. */
   private post(msg: SessionsOutbound): void {
-    void this.view?.webview.postMessage(msg);
+    for (const view of this.views) void view.webview.postMessage(msg);
   }
 
   private async onMessage(msg: SessionsInbound): Promise<void> {
@@ -105,7 +113,7 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
    *                                           returns only INACTIVE sessions)
    */
   async refresh(): Promise<void> {
-    if (!this.view) return;
+    if (this.views.size === 0) return;
     const openIds = ChatPanel.openSessionIds();
     const activeId = ChatPanel.activeSessionId();
 

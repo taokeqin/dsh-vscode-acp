@@ -60,8 +60,14 @@ behaviour rather than a webview reimplementation of it. Tabs survive a window re
 through a `WebviewPanelSerializer`: the webview persists its `sessionId` and each
 restored tab resumes that session.
 
-The sidebar is the session list — a launcher, not a transcript. Sessions with an open
-tab are marked, and the visible tab is highlighted, so it doubles as an overview.
+The session list is a launcher, not a transcript. Sessions with an open tab are
+marked, and the visible tab is highlighted, so it doubles as an overview.
+
+It mounts in **both** sidebars — the activity bar on the left and the secondary
+sidebar on the right — from a single provider, so it can live on either side (or
+both at once) and one refresh updates every copy. **DSH: Focus Sessions** prefers
+the right-hand one, matching where Claude Code puts its own view, and falls back to
+the left when the host has no secondary sidebar.
 
 Tabs open in the column beside your code (`dshAgent.panelColumn`, `Beside` or
 `Active`). Files opened from a tool row go to column One, so code lands next to the

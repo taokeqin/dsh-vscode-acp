@@ -81,8 +81,26 @@ export function activate(context: vscode.ExtensionContext): void {
     return id === null ? undefined : ChatPanel.get(id);
   };
 
+  /**
+   * Focuses the session list, preferring the secondary (right) sidebar.
+   *
+   * VS Code generates `<viewId>.focus` for every declared view; the secondary one
+   * only exists where the host supports a secondary sidebar, so fall back to the
+   * activity-bar copy when that command is absent.
+   */
+  const focusSessions = async (preferRight: boolean): Promise<void> => {
+    const commands = await vscode.commands.getCommands(true);
+    const right = 'dshAgent.sessionsSecondary.focus';
+    const left = 'dshAgent.sessions.focus';
+    const target = preferRight && commands.includes(right) ? right : left;
+    await vscode.commands.executeCommand(target);
+  };
+
   context.subscriptions.push(
+    // One provider, two mount points: the list can live on the left, the right, or
+    // both at once, and a single refresh updates every mounted copy.
     vscode.window.registerWebviewViewProvider('dshAgent.sessions', sessions),
+    vscode.window.registerWebviewViewProvider('dshAgent.sessionsSecondary', sessions),
 
     // Restores session tabs after a window reload; the webview persisted its
     // sessionId via setState, and each restored tab resumes that session.
@@ -103,9 +121,8 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     }),
 
-    vscode.commands.registerCommand('dshAgent.focus', () =>
-      vscode.commands.executeCommand('dshAgent.sessions.focus'),
-    ),
+    vscode.commands.registerCommand('dshAgent.focus', () => focusSessions(true)),
+    vscode.commands.registerCommand('dshAgent.focusSecondary', () => focusSessions(true)),
     vscode.commands.registerCommand('dshAgent.newSession', requireRoot(() => sessions!.newSession())),
     vscode.commands.registerCommand('dshAgent.refreshSessions', () => void sessions?.refresh()),
     vscode.commands.registerCommand('dshAgent.pickModel', requireRoot(async () => {

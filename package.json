@@ -21,6 +21,7 @@
   },
   "activationEvents": [
     "onView:dshAgent.sessions",
+    "onView:dshAgent.sessionsSecondary",
     "onWebviewPanel:dshAgent.chatPanel"
   ],
   "contributes": {
@@ -31,12 +32,26 @@
           "title": "DSH",
           "icon": "media/icon.svg"
         }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "dshAgent-secondary",
+          "title": "DSH",
+          "icon": "media/icon.svg"
+        }
       ]
     },
     "views": {
       "dshAgent": [
         {
           "id": "dshAgent.sessions",
+          "name": "Sessions",
+          "type": "webview"
+        }
+      ],
+      "dshAgent-secondary": [
+        {
+          "id": "dshAgent.sessionsSecondary",
           "name": "Sessions",
           "type": "webview"
         }
@@ -80,23 +95,27 @@
         "command": "dshAgent.restart",
         "title": "DSH: Restart Agent Process",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "dshAgent.focusSecondary",
+        "title": "DSH: Focus Sessions (Right Side)"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "dshAgent.newSession",
-          "when": "view == dshAgent.sessions",
+          "when": "view == dshAgent.sessions || view == dshAgent.sessionsSecondary",
           "group": "navigation@1"
         },
         {
           "command": "dshAgent.refreshSessions",
-          "when": "view == dshAgent.sessions",
+          "when": "view == dshAgent.sessions || view == dshAgent.sessionsSecondary",
           "group": "navigation@2"
         },
         {
           "command": "dshAgent.showLogs",
-          "when": "view == dshAgent.sessions",
+          "when": "view == dshAgent.sessions || view == dshAgent.sessionsSecondary",
           "group": "navigation@3"
         }
       ],
