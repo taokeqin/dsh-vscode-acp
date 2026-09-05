@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { AcpConnection } from '../acp/connection';
 import { listSessionIdsOnDisk, loadSessionMeta, type SessionMeta } from '../history/store';
+import { orderSessions, pickPreferredSession } from '../sessionOrder';
 import { ChatPanel } from './chatPanel';
 import { sessionsHtml, type SessionsInbound, type SessionsOutbound } from './sessionsHtml';
 
@@ -134,14 +135,8 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
     const metas = await Promise.all([...ids].map((id) => this.metaFor(id)));
     // Drop delegated sub-agent runs: only depth 0 is a conversation the user started.
     // This is what session/list means by "root sessions"; the disk holds both.
-    const roots = metas.filter((m) => m.delegationDepth === null || m.delegationDepth === 0);
-    // Open sessions first, then most recently active. An open session with no log
-    // yet (brand new) would otherwise sink to the bottom.
-    const weight = (m: SessionMeta): number => m.updatedAt ?? (openIds.includes(m.sessionId) ? Date.now() : 0);
-    roots.sort((a, b) => {
-      const openDelta = Number(openIds.includes(b.sessionId)) - Number(openIds.includes(a.sessionId));
-      return openDelta !== 0 ? openDelta : weight(b) - weight(a);
-    });
+    // Delegated sub-agent runs are dropped and ordering rules live in sessionOrder.
+    const roots = orderSessions(metas, openIds);
 
     this.post({
       type: 'sessions',
@@ -187,14 +182,13 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
     try {
       const ids = listSessionIdsOnDisk(this.dshHome(), this.workspaceRoot);
       const metas = await Promise.all(ids.map((id) => this.metaFor(id)));
-      candidates = metas
-        .filter((m) => m.delegationDepth === null || m.delegationDepth === 0)
-        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+      candidates = metas;
     } catch (err) {
       this.log(`[sessions] openLast scan failed: ${String(err)}`);
     }
-    if (candidates.length > 0) {
-      await this.openSession(candidates[0].sessionId);
+    const target = pickPreferredSession(candidates);
+    if (target) {
+      await this.openSession(target.sessionId);
       return;
     }
     await this.newSession();

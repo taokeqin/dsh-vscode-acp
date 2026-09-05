@@ -42,8 +42,15 @@ Transcript replay is recovered separately — see below.
 
 The whale in the editor title bar is **DSH: Open** — the same placement Claude Code
 uses for its own (`editor/title`, `navigation` group). One click reveals the visible
-session tab, else any open tab, else reopens the most recent session for the
-workspace, else starts a fresh one.
+session tab, else any open tab, else reopens the most recent session **that holds a
+conversation**, else starts a fresh one.
+
+That qualifier matters. A session is created before its first message, so an
+untouched one — from a `+` click, or from a start that failed after creating it —
+carries the newest timestamp. Ranking by recency alone therefore landed on a blank
+session and looked exactly like lost history. The sidebar orders the same way: open
+tabs, then conversations, then untouched sessions. Rules live in `src/sessionOrder.ts`,
+kept vscode-free so `test/session-order.mjs` can pin them.
 
 Title-bar icons are rendered as images rather than masked like container icons, so
 `currentColor` would resolve to black and disappear on dark themes. The title icon
