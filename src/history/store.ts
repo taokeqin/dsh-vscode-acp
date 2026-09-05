@@ -25,8 +25,14 @@ export type HistoryEntry =
   | { kind: 'assistant'; text: string; reasoning: string }
   | { kind: 'tool'; id: string; name: string; detail: string; failed: boolean };
 
+/** Context consumption at the end of the log, matching ACP's usage_update shape. */
+export interface HistoryUsage {
+  used: number;
+  size: number;
+}
+
 export type HistoryResult =
-  | { ok: true; entries: HistoryEntry[]; truncated: boolean; scanned: number }
+  | { ok: true; entries: HistoryEntry[]; truncated: boolean; scanned: number; usage?: HistoryUsage }
   | { ok: false; reason: string };
 
 /**
@@ -210,6 +216,18 @@ function textOfBlocks(blocks: unknown, type = 'text'): string {
  */
 export function parseTranscript(jsonl: string, maxEntries: number): HistoryResult {
   const entries: HistoryEntry[] = [];
+  /**
+   * Context usage as of the last request in the log.
+   *
+   * ACP only reports usage while a turn runs, so a resumed session showed nothing
+   * until the next message — exactly when knowing the remaining room is most useful.
+   * Both halves are on disk: `request/context` carries the window, and each
+   * `assistant/message` carries the tokens that request consumed. The LAST values
+   * win, which also makes this correct across a compaction: the context shrinks and
+   * later records reflect the smaller total.
+   */
+  let usedTokens: number | null = null;
+  let contextWindow: number | null = null;
   /** tool callId → name and argument summary, learned from the tool/call that precedes each result. */
   const toolNames = new Map<string, string>();
   const toolArgs = new Map<string, string>();
@@ -225,6 +243,11 @@ export function parseTranscript(jsonl: string, maxEntries: number): HistoryResul
       continue; // A truncated or partially-flushed tail line is expected, not an error.
     }
     const type = rec.type;
+    if (type === 'request/context') {
+      const w = (rec.data as { contextWindow?: unknown } | undefined)?.contextWindow;
+      if (typeof w === 'number' && w > 0) contextWindow = w;
+      continue;
+    }
     if (type === 'tool/call') {
       const d = rec.data as { callId?: string; name?: string; arguments?: string } | undefined;
       if (d?.callId && typeof d.name === 'string') toolNames.set(d.callId, d.name);
@@ -242,6 +265,8 @@ export function parseTranscript(jsonl: string, maxEntries: number): HistoryResul
       continue;
     }
     if (type === 'assistant/message') {
+      const total = (rec.data as { usage?: { totalTokens?: unknown } } | undefined)?.usage?.totalTokens;
+      if (typeof total === 'number' && total > 0) usedTokens = total;
       const content = (rec.data as { message?: { content?: unknown } } | undefined)?.message?.content;
       const text = textOfBlocks(content);
       const reasoning = textOfBlocks(content, 'reasoning');
@@ -274,7 +299,16 @@ export function parseTranscript(jsonl: string, maxEntries: number): HistoryResul
 
   // Keep the tail: the most recent exchange is what the reader needs on resume.
   const truncated = entries.length > maxEntries;
-  return { ok: true, entries: truncated ? entries.slice(-maxEntries) : entries, truncated, scanned };
+  // Both halves are needed for a meaningful ratio; one alone says nothing.
+  const usage: HistoryUsage | undefined =
+    usedTokens !== null && contextWindow !== null ? { used: usedTokens, size: contextWindow } : undefined;
+  return {
+    ok: true,
+    entries: truncated ? entries.slice(-maxEntries) : entries,
+    truncated,
+    scanned,
+    ...(usage ? { usage } : {}),
+  };
 }
 
 /** Descriptive metadata for one persisted session, for the sidebar list. */

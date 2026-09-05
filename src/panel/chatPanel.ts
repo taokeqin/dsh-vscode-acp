@@ -350,6 +350,9 @@ export class ChatPanel {
       `[history] restored ${result.entries.length} entries from ${result.scanned} records` +
         `${result.truncated ? ' (older ones omitted)' : ''}`,
     );
+    // Restore the context ring before the transcript, so a resumed session shows how
+    // much room is left without having to send a message first.
+    if (result.usage) this.post({ type: 'usage', used: result.usage.used, size: result.usage.size });
     this.post({
       type: 'history',
       entries: result.entries.map((e) => {

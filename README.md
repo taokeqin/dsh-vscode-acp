@@ -112,9 +112,17 @@ Settings are per session: changing one tab does not affect another.
 Context usage sits beside them as a small ring that fills as the window is consumed,
 going from neutral to yellow at 60% and red at 85%. The exact numbers are rarely
 what you want mid-conversation, so they live in the hover title —
-*"Context 12% — 118,402 of 1,000,000 tokens"*. The ring appears once the agent has
-reported usage, which means after the first turn of a session; a restored transcript
-alone does not populate it.
+*"Context 12% — 118,402 of 1,000,000 tokens"*.
+
+A resumed session shows its ring immediately, recovered from the log rather than
+waiting for the next turn — knowing how much room is left is most useful *before*
+sending, not after. ACP only reports usage mid-turn, but both halves are on disk:
+`request/context` carries the window and each `assistant/message` carries the tokens
+its request consumed. The last values win, which is also what makes it correct after
+a compaction — the context shrinks and later records reflect the smaller total. The
+window is read per session rather than assumed: sessions here run at both 1,000,000
+and 1,024,000. 47 of 73 sessions on this machine yield usage, exactly the 47 that
+hold a conversation.
 
 The parameter for `session/set_config_option` is **`configId`**, not `optionId`.
 Every plausible spelling returned `-32602 Invalid params`; the right one came from

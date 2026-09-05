@@ -80,6 +80,35 @@ await check('the runtime-context block specifically is dropped', () => {
   assert.equal(parseTranscript(U('plugin', text), 10).entries.length, 0);
 });
 
+console.log('\n3c. context usage recovered from the log');
+const usageLog = [
+  { type: 'request/context', data: { contextWindow: 1000000 } },
+  { type: 'assistant/message', surfaceOp: 'append',
+    data: { usage: { totalTokens: 8654 }, message: { content: [{ type: 'text', text: 'a' }] } } },
+  { type: 'assistant/message', surfaceOp: 'append',
+    data: { usage: { totalTokens: 31203 }, message: { content: [{ type: 'text', text: 'b' }] } } },
+].map((o) => JSON.stringify(o)).join('\n');
+await check('takes the last usage, not the first', () => {
+  const r = parseTranscript(usageLog, 50);
+  assert.deepEqual(r.usage, { used: 31203, size: 1000000 });
+});
+await check('a shrinking total after compaction wins', () => {
+  // Compaction drops the context, so later records report less; last-wins is what
+  // makes the restored ring match reality rather than the pre-compaction peak.
+  const compacted = usageLog + '\n' + JSON.stringify({
+    type: 'assistant/message', surfaceOp: 'append',
+    data: { usage: { totalTokens: 11416 }, message: { content: [{ type: 'text', text: 'c' }] } },
+  });
+  assert.equal(parseTranscript(compacted, 50).usage.used, 11416);
+});
+await check('no usage without both halves', () => {
+  const onlyWindow = JSON.stringify({ type: 'request/context', data: { contextWindow: 999 } });
+  assert.equal(parseTranscript(onlyWindow, 50).usage, undefined);
+});
+await check('window size is read per session, not assumed', () => {
+  const other = usageLog.replace('1000000', '1024000');
+  assert.equal(parseTranscript(other, 50).usage.size, 1024000);
+});
 console.log('\n4. real on-disk sessions');
 const root = join(DSH_HOME, 'sessions');
 const real = [];
@@ -100,6 +129,13 @@ for (const sid of real) {
 }
 await check('every real session parsed without error', () => assert.equal(restored + empty, real.length));
 await check('most sessions yield entries', () => assert.ok(restored > 0, `${restored} with entries, ${empty} empty`));
+let withUsage = 0;
+for (const sid of real) {
+  const u = (await loadTranscript({ dshHome: DSH_HOME, sessionId: sid, maxEntries: 5 })).usage;
+  if (u) withUsage++;
+}
+console.log(`  ${withUsage}/${real.length} sessions report recoverable context usage`);
+await check('real sessions do yield usage', () => assert.ok(withUsage > 0));
 console.log(`  → ${restored} with content, ${empty} empty`);
 
 const loaded = [];
