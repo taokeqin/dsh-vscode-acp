@@ -109,6 +109,13 @@ The composer carries a dropdown for every setting the agent advertises — today
 `session/new` rather than hardcoded, so a build exposing more just renders more.
 Settings are per session: changing one tab does not affect another.
 
+Context usage sits beside them as a small ring that fills as the window is consumed,
+going from neutral to yellow at 60% and red at 85%. The exact numbers are rarely
+what you want mid-conversation, so they live in the hover title —
+*"Context 12% — 118,402 of 1,000,000 tokens"*. The ring appears once the agent has
+reported usage, which means after the first turn of a session; a restored transcript
+alone does not populate it.
+
 The parameter for `session/set_config_option` is **`configId`**, not `optionId`.
 Every plausible spelling returned `-32602 Invalid params`; the right one came from
 reading the agent's own handler. Worth stating plainly because the model picker

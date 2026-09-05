@@ -110,10 +110,13 @@ await check('inline script is syntactically valid JS', () => {
   assert.ok(scripts.length > 0, 'no inline script found');
   for (const src of scripts) new Function(src); // throws on a syntax error
 });
-await check('no innerHTML anywhere in the panel document', () => {
+await check('the panel never assigns markup', () => {
   // Everything rendered is agent output, so it must go through createElement and
-  // textContent only.
-  assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML/.test(chatHtml('n')));
+  // textContent only. Matches property *use* (leading dot) rather than the bare
+  // word, which also appears in comments explaining why it is avoided.
+  const html = chatHtml('n');
+  const hit = /\.(innerHTML|outerHTML|insertAdjacentHTML)\b/.exec(html);
+  assert.equal(hit, null, hit ? `found ${hit[0]}` : '');
 });
 
 console.log(failures === 0 ? '\nALL PASS\n' : `\n${failures} FAILED\n`);

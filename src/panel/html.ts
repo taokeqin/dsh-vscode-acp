@@ -159,7 +159,16 @@ details.thought .body { margin-top: 6px; }
 }
 #opts select:hover { background: var(--vscode-list-hoverBackground); }
 #opts select:disabled { opacity: 0.5; cursor: default; }
-#status { flex: 1; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+#status { flex: 1; display: flex; justify-content: flex-end; align-items: center; }
+/* Context usage: a ring rather than a number, since the exact token count is
+   rarely what you want mid-conversation — the hover title carries it. */
+#usage { display: none; cursor: default; }
+#usage.on { display: block; }
+#usage .track { stroke: var(--vscode-panel-border); }
+#usage .arc { transition: stroke-dasharray .3s ease, stroke .3s ease; }
+#usage .arc.ok   { stroke: var(--vscode-descriptionForeground); }
+#usage .arc.warn { stroke: var(--vscode-charts-yellow, #cca700); }
+#usage .arc.high { stroke: var(--vscode-charts-red, #f14c4c); }
 button {
   background: var(--vscode-button-background); color: var(--vscode-button-foreground);
   border: none; padding: 4px 12px; border-radius: 3px; cursor: pointer; font-size: inherit;
@@ -184,7 +193,7 @@ const status = document.getElementById('status');
 const opts = document.getElementById('opts');
 
 let busy = false;
-let usage = '';
+let usage = null; // { used, size } once the agent has reported any
 // Streaming chunks arrive per messageId; keep the live node so text appends in place.
 const streams = new Map();
 const tools = new Map();
@@ -403,8 +412,58 @@ function addNotice(text, tone) {
   scroll(wasBottom);
 }
 
+// —— context usage ring ——
+// SVG is built through createElementNS for the same reason the transcript avoids
+// innerHTML: nothing here is ever assembled as markup.
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const RING_R = 6;
+const RING_C = 2 * Math.PI * RING_R;
+let usageArc = null;
+let usageRing = null;
+
+function ensureUsageRing() {
+  if (usageRing) return usageRing;
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.id = 'usage';
+  svg.setAttribute('width', '15');
+  svg.setAttribute('height', '15');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  const track = document.createElementNS(SVG_NS, 'circle');
+  track.setAttribute('class', 'track');
+  const arc = document.createElementNS(SVG_NS, 'circle');
+  arc.setAttribute('class', 'arc ok');
+  for (const c of [track, arc]) {
+    c.setAttribute('cx', '8');
+    c.setAttribute('cy', '8');
+    c.setAttribute('r', String(RING_R));
+    c.setAttribute('fill', 'none');
+    c.setAttribute('stroke-width', '2');
+  }
+  // Start the arc at twelve o'clock and grow clockwise.
+  arc.setAttribute('transform', 'rotate(-90 8 8)');
+  arc.setAttribute('stroke-linecap', 'round');
+  arc.setAttribute('stroke-dasharray', '0 ' + RING_C);
+  svg.append(track, arc);
+  status.append(svg);
+  usageRing = svg;
+  usageArc = arc;
+  return svg;
+}
+
 function renderStatus() {
-  status.textContent = usage;
+  if (!usage) return;
+  const ring = ensureUsageRing();
+  const pct = Math.max(0, Math.min(1, usage.used / usage.size));
+  usageArc.setAttribute('stroke-dasharray', (pct * RING_C).toFixed(2) + ' ' + RING_C);
+  usageArc.setAttribute('class', 'arc ' + (pct >= 0.85 ? 'high' : pct >= 0.6 ? 'warn' : 'ok'));
+  const shown = pct > 0 && pct < 0.01 ? '<1' : String(Math.round(pct * 100));
+  ring.classList.add('on');
+  // The title is the whole point of the compact form: hover for the real numbers.
+  const t = document.createElementNS(SVG_NS, 'title');
+  t.textContent =
+    'Context ' + shown + '% — ' + usage.used.toLocaleString() + ' of ' + usage.size.toLocaleString() + ' tokens';
+  ring.querySelectorAll('title').forEach((el) => el.remove());
+  ring.append(t);
 }
 
 /**
@@ -485,8 +544,10 @@ window.addEventListener('message', (e) => {
     case 'message': renderMessage(m.role === 'thought' ? 'thought' : 'assistant', String(m.messageId), m.blocks, String(m.preview ?? '')); break;
     case 'tool':   upsertTool(m); break;
     case 'usage':
-      usage = Math.round((m.used / m.size) * 100) + '% context (' + m.used.toLocaleString() + ')';
-      renderStatus();
+      if (typeof m.used === 'number' && typeof m.size === 'number' && m.size > 0) {
+        usage = { used: m.used, size: m.size };
+        renderStatus();
+      }
       break;
     case 'history':
       if (Array.isArray(m.entries) && m.entries.length > 0) renderHistory(m.entries, m.truncated === true);
