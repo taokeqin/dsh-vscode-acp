@@ -76,6 +76,7 @@ export class ChatPanel {
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly sessionId: string,
+    /** Shared agent connection; also read by syncBusyContext for the active tab. */
     private readonly connection: AcpConnection,
     private readonly workspaceRoot: string,
     private readonly log: (line: string) => void,
@@ -86,12 +87,28 @@ export class ChatPanel {
     panel.webview.html = chatHtml(randomBytes(16).toString('base64'));
     this.disposables.push(
       panel.webview.onDidReceiveMessage((msg: PanelInbound) => void this.onMessage(msg)),
-      panel.onDidChangeViewState(() => ChatPanel.changeEmitter.fire()),
+      panel.onDidChangeViewState(() => {
+        ChatPanel.syncBusyContext();
+        ChatPanel.changeEmitter.fire();
+      }),
       panel.onDidDispose(() => void this.dispose()),
     );
 
     this.unsubscribe = connection.subscribe(sessionId, (u) => this.onUpdate(u));
     ChatPanel.changeEmitter.fire();
+  }
+
+  /**
+   * Publishes whether the *visible* tab has a turn in flight, so the Stop button can
+   * appear only while it is useful. Busy state is per session, and the title bar
+   * belongs to whichever tab is active, so this is recomputed on every view-state
+   * change as well as around each turn.
+   */
+  private static syncBusyContext(): void {
+    const id = ChatPanel.activeSessionId();
+    const panel = id === null ? undefined : ChatPanel.open.get(id);
+    const busy = panel !== undefined && panel.connection.busy(panel.sessionId);
+    void vscode.commands.executeCommand('setContext', 'dshAgent.busy', busy);
   }
 
   /** Sessions with an open tab. */
@@ -337,6 +354,7 @@ export class ChatPanel {
     if (typeof text !== 'string' || text.trim() === '') return;
     this.post({ type: 'user', text });
     this.post({ type: 'state', busy: true, sessionId: this.sessionId, model: null });
+    ChatPanel.syncBusyContext();
     try {
       const res = await this.connection.prompt(this.sessionId, text);
       this.post({ type: 'turnEnd', stopReason: res.stopReason });
@@ -345,6 +363,7 @@ export class ChatPanel {
       this.post({ type: 'notice', text: `Turn failed: ${String(err)}`, tone: 'error' });
     } finally {
       this.pushState();
+      ChatPanel.syncBusyContext();
     }
   }
 
@@ -388,6 +407,7 @@ export class ChatPanel {
     if (this.disposed) return;
     this.disposed = true;
     ChatPanel.open.delete(this.sessionId);
+    ChatPanel.syncBusyContext();
     this.unsubscribe?.();
     this.unsubscribe = null;
     for (const d of this.disposables) d.dispose();

@@ -58,6 +58,28 @@ therefore carries a fixed brand blue that reads on both — the same trick Claud
 Code's orange logo relies on. The container icon keeps `currentColor`, since VS Code
 masks and themes that one.
 
+## Buttons on a session tab
+
+Claude Code turns out to contribute very little to the editor title bar: only
+`editor.openLast`, `terminal.open` and the diff accept/reject get `navigation`
+icons. `newConversation` appears in the command palette alone — its own button is
+drawn inside the webview — and there is no history command at all, because history
+*is* the sessions sidebar view.
+
+What is worth copying is how it scopes the entries it does contribute:
+`activeWebviewPanelId == '<viewType>'`, so they never appear on ordinary editors.
+Using that key, a session tab carries:
+
+| | |
+|---|---|
+| `$(add)` | New Session |
+| `$(history)` | Session History — reveals the sidebar list |
+| `$(settings-gear)` | Select Model |
+| `$(debug-stop)` | Cancel — only while a turn is in flight (`dshAgent.busy`) |
+
+Show Logs and Restart Agent sit in the `…` overflow, which is where Claude Code puts
+its own secondary actions. On any other editor the title bar shows just the whale.
+
 ## Transcript replay (best effort, `dshAgent.replayHistory`)
 
 `session/resume` restores the agent's context but replays nothing, so a resumed

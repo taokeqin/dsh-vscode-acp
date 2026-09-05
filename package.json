@@ -53,7 +53,8 @@
       },
       {
         "command": "dshAgent.focus",
-        "title": "DSH: Focus Sessions"
+        "title": "DSH: Session History",
+        "icon": "$(history)"
       },
       {
         "command": "dshAgent.newSession",
@@ -118,7 +119,50 @@
       "editor/title": [
         {
           "command": "dshAgent.openLast",
-          "group": "navigation"
+          "group": "navigation@0",
+          "when": "activeWebviewPanelId != 'dshAgent.chatPanel'"
+        },
+        {
+          "command": "dshAgent.newSession",
+          "group": "navigation@1",
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+        },
+        {
+          "command": "dshAgent.focus",
+          "group": "navigation@2",
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+        },
+        {
+          "command": "dshAgent.pickModel",
+          "group": "navigation@3",
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+        },
+        {
+          "command": "dshAgent.cancel",
+          "group": "navigation@4",
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel' && dshAgent.busy"
+        },
+        {
+          "command": "dshAgent.showLogs",
+          "group": "1_dsh@1",
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+        },
+        {
+          "command": "dshAgent.restart",
+          "group": "1_dsh@2",
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "dshAgent.newSession",
+          "group": "1_dsh@1",
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+        },
+        {
+          "command": "dshAgent.focus",
+          "group": "1_dsh@2",
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
         }
       ]
     },
