@@ -66,9 +66,27 @@ icons. `newConversation` appears in the command palette alone — its own button
 drawn inside the webview — and there is no history command at all, because history
 *is* the sessions sidebar view.
 
-What is worth copying is how it scopes the entries it does contribute:
-`activeWebviewPanelId == '<viewType>'`, so they never appear on ordinary editors.
-Using that key, a session tab carries:
+What is worth copying is how it scopes the entries it does contribute — and the
+scoping needs **both** halves:
+
+```
+activeWebviewPanelId == '<viewType>' && (!resource || resourceScheme == 'webview-panel')
+```
+
+`activeWebviewPanelId` is a *global* context key, so on its own it is true for every
+group's title bar at once: focusing a session tab made the session actions appear
+over the code editor too. `resourceScheme` is evaluated per title bar, and that is
+what pins them to the webview tab.
+
+The whale is the mirror image. Keying it off `activeWebviewPanelId != …` made it
+vanish from the code group the moment a session took focus and reappear on the way
+back; it is keyed off `resourceScheme != 'webview-panel'` instead, so it depends on
+what that tab *is* rather than on what happens to be focused.
+
+`test/menus.mjs` pins both rules, because a wrong `when` clause raises no error — it
+just makes icons show up in the wrong place or blink.
+
+A session tab carries:
 
 | | |
 |---|---|

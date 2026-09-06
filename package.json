@@ -120,49 +120,49 @@
         {
           "command": "dshAgent.openLast",
           "group": "navigation@0",
-          "when": "activeWebviewPanelId != 'dshAgent.chatPanel'"
+          "when": "resourceScheme != 'webview-panel'"
         },
         {
           "command": "dshAgent.newSession",
           "group": "navigation@1",
-          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel' && (!resource || resourceScheme == 'webview-panel')"
         },
         {
           "command": "dshAgent.focus",
           "group": "navigation@2",
-          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel' && (!resource || resourceScheme == 'webview-panel')"
         },
         {
           "command": "dshAgent.pickModel",
           "group": "navigation@3",
-          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel' && (!resource || resourceScheme == 'webview-panel')"
         },
         {
           "command": "dshAgent.cancel",
           "group": "navigation@4",
-          "when": "activeWebviewPanelId == 'dshAgent.chatPanel' && dshAgent.busy"
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel' && (!resource || resourceScheme == 'webview-panel') && dshAgent.busy"
         },
         {
           "command": "dshAgent.showLogs",
           "group": "1_dsh@1",
-          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel' && (!resource || resourceScheme == 'webview-panel')"
         },
         {
           "command": "dshAgent.restart",
           "group": "1_dsh@2",
-          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel' && (!resource || resourceScheme == 'webview-panel')"
         }
       ],
       "editor/title/context": [
         {
           "command": "dshAgent.newSession",
           "group": "1_dsh@1",
-          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel' && (!resource || resourceScheme == 'webview-panel')"
         },
         {
           "command": "dshAgent.focus",
           "group": "1_dsh@2",
-          "when": "activeWebviewPanelId == 'dshAgent.chatPanel'"
+          "when": "activeWebviewPanelId == 'dshAgent.chatPanel' && (!resource || resourceScheme == 'webview-panel')"
         }
       ]
     },
@@ -225,7 +225,7 @@
     "watch": "tsc -w -p ./",
     "typecheck": "tsc --noEmit -p ./",
     "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies -o dsh-agent.vsix",
-    "test": "npm run compile && node test/locate.mjs && node test/markdown.mjs && node test/file-ref.mjs && node test/file-refs-decorate.mjs && node test/skills.mjs && node test/slash-menu.mjs && node test/composer-keys.mjs && node test/session-order.mjs && node test/panel-column.mjs && node test/gui-launch.mjs && node test/smoke.mjs && node test/history.mjs"
+    "test": "npm run compile && node test/menus.mjs && node test/locate.mjs && node test/markdown.mjs && node test/file-ref.mjs && node test/file-refs-decorate.mjs && node test/skills.mjs && node test/slash-menu.mjs && node test/composer-keys.mjs && node test/session-order.mjs && node test/panel-column.mjs && node test/gui-launch.mjs && node test/smoke.mjs && node test/history.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
