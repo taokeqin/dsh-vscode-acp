@@ -191,15 +191,39 @@ export class ChatPanel {
    * group each time. Reuse the column an existing tab already occupies — preferring
    * the visible one — and fall back to the configured column only when none is open.
    */
-  private static preferredColumn(): vscode.ViewColumn {
+  private static preferredColumn(): { column: vscode.ViewColumn; reused: boolean } {
     const activeId = ChatPanel.activeSessionId();
     const active = activeId === null ? undefined : ChatPanel.open.get(activeId);
     const others = [...ChatPanel.open.values()].map((p) => p.panel.viewColumn as number | undefined);
-    return pickSessionColumn(
+    const choice = pickSessionColumn(
       active?.panel.viewColumn as number | undefined,
       others,
       ChatPanel.configuredColumn() as number,
-    ) as vscode.ViewColumn;
+    );
+    return { column: choice.column as vscode.ViewColumn, reused: choice.reused };
+  }
+
+  /**
+   * Locks the group the session tabs live in.
+   *
+   * A locked group refuses new editors, so opening a file — from the explorer, from
+   * Cmd+P, or from a tool row — lands in the code group instead of stacking on top
+   * of the conversation. This is what Claude Code does after creating its panel.
+   *
+   * Only ever applied to a group we created ourselves: with panelColumn set to
+   * `Active` the session shares the user's code group, and locking that would stop
+   * them opening files where they expect.
+   */
+  private static async lockOwnGroup(): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('dshAgent');
+    if (!cfg.get<boolean>('lockEditorGroup', true)) return;
+    if (cfg.get<string>('panelColumn', 'Beside') === 'Active') return;
+    try {
+      // Acts on the active group, which is the one the new panel just created.
+      await vscode.commands.executeCommand('workbench.action.lockEditorGroup');
+    } catch {
+      // Older hosts may not have the command; an unlocked group still works.
+    }
   }
 
   /**
@@ -212,13 +236,16 @@ export class ChatPanel {
     connection: AcpConnection,
     workspaceRoot: string,
     log: (line: string) => void,
-    column: vscode.ViewColumn = ChatPanel.preferredColumn(),
   ): ChatPanel {
+    const { column, reused } = ChatPanel.preferredColumn();
     const panel = vscode.window.createWebviewPanel(CHAT_VIEW_TYPE, title, column, {
       enableScripts: true,
       retainContextWhenHidden: true,
     });
-    return new ChatPanel(panel, sessionId, connection, workspaceRoot, log);
+    const created = new ChatPanel(panel, sessionId, connection, workspaceRoot, log);
+    // Lock only the group we just created; a reused one is already locked.
+    if (!reused) void ChatPanel.lockOwnGroup();
+    return created;
   }
 
   /** Rebuilds a panel VS Code restored after a window reload. */

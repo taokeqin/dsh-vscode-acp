@@ -236,10 +236,19 @@ secondary sidebars, so a container in both places would just be clutter.
 
 The **first** session tab opens in the column beside your code
 (`dshAgent.panelColumn`, `Beside` or `Active`); every session after that joins that
-same group as a tab. `Beside` alone cannot express this — it means "next to whatever
+same group as a tab.
+
+That group is then **locked** (`workbench.action.lockEditorGroup`), which is what
+keeps conversations and code apart: a locked group refuses new editors, so opening a
+file — from the explorer, Cmd+P, or a tool row — lands in the code group instead of
+stacking on top of the chat. Claude Code does the same thing right after creating its
+panel. Only a group this extension created is ever locked: with `panelColumn: Active`
+the session deliberately shares your group, and locking that would stop you opening
+files where you expect. Disable with `dshAgent.lockEditorGroup: false`. `Beside` alone cannot express this — it means "next to whatever
 is active", so opening a session while a session tab was focused split the editor
 into yet another group each time. The rule lives in `src/panelColumn.ts` and is
-pinned by `test/panel-column.mjs`.
+pinned by `test/panel-column.mjs`; it also reports whether a group was reused, which
+is how locking stays a one-time act rather than being repeated per tab.
 
 Files opened from a tool row go to column One, so code lands next to the chat rather
 than on top of it.

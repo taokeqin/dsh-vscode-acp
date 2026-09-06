@@ -211,6 +211,11 @@
           ],
           "default": "Beside",
           "markdownDescription": "Where a session tab opens. `Beside` puts the chat in the column next to your code; `Active` opens it in the current column."
+        },
+        "dshAgent.lockEditorGroup": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Lock the editor group holding session tabs, so opening a file lands in your code group instead of stacking on top of the conversation. Ignored when `dshAgent.panelColumn` is `Active`, where the session deliberately shares your group."
         }
       }
     }
