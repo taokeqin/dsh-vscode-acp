@@ -53,6 +53,22 @@ check('both post a message rather than relying on a menu', () => {
   assert.match(html, /type: 'showSessions'/);
 });
 
+console.log('\n3b. the session list is inline, not a detour to the sidebar');
+check('the panel renders its own list', () => assert.match(html, /id="sessions"/));
+check('History asks the host for rows instead of focusing a view', () =>
+  assert.match(html, /type: 'showSessions'/));
+check('picking a row opens that session', () => assert.match(html, /type: 'openSession'/));
+check('the active row is a no-op rather than a needless resume', () =>
+  assert.match(html, /if \(!r\.active\)/));
+check('outside click and Escape dismiss it', () => {
+  assert.match(html, /closeSessions/);
+  assert.match(html, /'Escape'/);
+});
+
+console.log('\n3c. the context ring sits with the settings, not against Send');
+check('status area is left-aligned', () =>
+  assert.match(html, /#status \{[^}]*justify-content: flex-start/));
+
 console.log('\n4. commands stay reachable from the palette');
 const declared = new Set(pkg.contributes.commands.map((c) => c.command));
 for (const cmd of PANEL_ACTIONS) {

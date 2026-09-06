@@ -32,7 +32,8 @@ export type PanelInbound =
   | { type: 'openExternal'; url: string }
   | { type: 'setOption'; id: string; value: string }
   | { type: 'newSession' }
-  | { type: 'showSessions' };
+  | { type: 'showSessions' }
+  | { type: 'openSession'; id: string };
 
 /** Messages the extension host posts down to the webview. */
 export type PanelOutbound =
@@ -59,7 +60,18 @@ export type PanelOutbound =
   | { type: 'history'; entries: HistoryEntryView[]; truncated: boolean }
   | { type: 'clear' }
   /** Handed to the webview so it can persist the binding for reload restore. */
-  | { type: 'restoreState'; state: { sessionId: string } };
+  | { type: 'restoreState'; state: { sessionId: string } }
+  /** Rows for the inline History popup. */
+  | { type: 'sessionList'; items: SessionListItem[] };
+
+/** One row of the panel's inline session list. */
+export interface SessionListItem {
+  id: string;
+  title: string;
+  when: string;
+  open: boolean;
+  active: boolean;
+}
 
 /** A restored transcript entry, already flattened by the history store. */
 export type HistoryEntryView =
@@ -93,6 +105,33 @@ body {
   border-radius: 3px; cursor: pointer;
 }
 #head button:hover { background: var(--vscode-list-hoverBackground); opacity: 1; }
+/* Inline session list, anchored under the header. Switching conversation should not
+   send the user off to another part of the window. */
+#head { position: relative; }
+#sessions {
+  display: none; position: absolute; top: 100%; right: 8px; z-index: 40; margin-top: 4px;
+  min-width: 240px; max-width: 380px; max-height: 300px; overflow-y: auto;
+  background: var(--vscode-editorSuggestWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-editorSuggestWidget-border, var(--vscode-panel-border));
+  border-radius: 4px; box-shadow: 0 4px 14px rgba(0,0,0,.4);
+}
+#sessions.on { display: block; }
+#sessions .row {
+  display: flex; gap: 7px; align-items: baseline; padding: 5px 9px; cursor: pointer;
+  border-left: 2px solid transparent;
+}
+#sessions .row:hover { background: var(--vscode-list-hoverBackground); }
+#sessions .row.active {
+  border-left-color: var(--vscode-focusBorder);
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+#sessions .row .dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: transparent; }
+#sessions .row.open .dot { background: var(--vscode-charts-green, #89d185); }
+#sessions .row .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#sessions .row.open .t { font-weight: 600; }
+#sessions .row .w { flex: none; font-size: 0.85em; opacity: 0.6; }
+#sessions .empty { padding: 8px 10px; opacity: 0.6; font-size: 0.9em; }
 #log { flex: 1; overflow-y: auto; padding: 10px 10px 4px; }
 .msg { margin-bottom: 12px; line-height: 1.6; word-break: break-word; }
 .msg > *:first-child { margin-top: 0; }
@@ -239,7 +278,9 @@ details.thought .body { margin-top: 6px; }
 .combo-menu .opt.sel { background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-activeSelectionBackground)); }
 .combo-menu .opt .tick { flex: none; width: 12px; opacity: 0.9; }
 .combo-menu .opt .txt { overflow: hidden; text-overflow: ellipsis; }
-#status { flex: 1; display: flex; justify-content: flex-end; align-items: center; }
+/* Left-aligned, next to the dropdowns. Right-aligned it sat against Send, which
+   read as if it belonged to the button. */
+#status { flex: 1; display: flex; justify-content: flex-start; align-items: center; padding-left: 2px; }
 /* Context usage: a ring rather than a number, since the exact token count is
    rarely what you want mid-conversation — the hover title carries it. */
 #usage { display: none; cursor: default; }
@@ -274,8 +315,51 @@ const opts = document.getElementById('opts');
 const slash = document.getElementById('slash');
 const headTitle = document.getElementById('head-title');
 
+const sessionsMenu = document.getElementById('sessions');
 document.getElementById('btn-new').onclick = () => vscode.postMessage({ type: 'newSession' });
-document.getElementById('btn-sessions').onclick = () => vscode.postMessage({ type: 'showSessions' });
+
+function closeSessions() { sessionsMenu.classList.remove('on'); }
+
+/** Renders the inline session list; the host answers a showSessions request with it. */
+function renderSessions(items) {
+  sessionsMenu.replaceChildren();
+  const rows = Array.isArray(items) ? items : [];
+  if (rows.length === 0) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = 'No sessions yet';
+    sessionsMenu.append(e);
+  }
+  for (const r of rows) {
+    if (!r || typeof r.id !== 'string') continue;
+    const row = document.createElement('div');
+    row.className = 'row' + (r.open ? ' open' : '') + (r.active ? ' active' : '');
+    row.setAttribute('role', 'option');
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = String(r.title ?? '').replace(/\s+/g, ' ') || 'untitled';
+    const w = document.createElement('span');
+    w.className = 'w';
+    w.textContent = String(r.when ?? '');
+    row.append(dot, t, w);
+    row.title = r.id;
+    row.onmousedown = (e) => {
+      e.preventDefault();
+      closeSessions();
+      // Clicking the session already shown is a no-op rather than a needless resume.
+      if (!r.active) vscode.postMessage({ type: 'openSession', id: r.id });
+    };
+    sessionsMenu.append(row);
+  }
+  sessionsMenu.classList.add('on');
+}
+
+document.getElementById('btn-sessions').onclick = () => {
+  if (sessionsMenu.classList.contains('on')) return closeSessions();
+  vscode.postMessage({ type: 'showSessions' });
+};
 
 let busy = false;
 let usage = null; // { used, size } once the agent has reported any
@@ -705,7 +789,13 @@ function renderOptions(list) {
 document.addEventListener('mousedown', (e) => {
   if (openCombo && !openCombo.menu.contains(e.target) && e.target !== openCombo.button
       && !openCombo.button.contains(e.target)) closeCombo();
+  const btn = document.getElementById('btn-sessions');
+  if (sessionsMenu.classList.contains('on') && !sessionsMenu.contains(e.target)
+      && e.target !== btn && !btn.contains(e.target)) closeSessions();
 }, true);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && sessionsMenu.classList.contains('on')) closeSessions();
+});
 
 function setBusy(v) {
   busy = v;
@@ -863,6 +953,7 @@ window.addEventListener('message', (e) => {
       renderStatus();
       break;
     case 'insert': insertAtCaret(String(m.text ?? '')); break;
+    case 'sessionList': renderSessions(m.items); break;
     case 'user':    addUser(m.blocks); break;
     case 'message': renderMessage(m.role === 'thought' ? 'thought' : 'assistant', String(m.messageId), m.blocks, String(m.preview ?? '')); break;
     case 'tool':   upsertTool(m); break;
@@ -937,6 +1028,7 @@ export function chatHtml(nonce: string): string {
   <span class="title" id="head-title">DSH</span>
   <button id="btn-new" title="Start a new session">+ New</button>
   <button id="btn-sessions" title="Show the session list">History</button>
+  <div id="sessions" role="listbox"></div>
 </div>
 <div id="log"></div>
 <div id="composer">

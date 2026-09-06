@@ -60,8 +60,18 @@ masks and themes that one.
 
 ## Where the session actions live
 
-Inside the panel, in a header row: the session title, **+ New**, and **History**.
-Model and reasoning effort sit in the composer; Stop appears there while a turn runs.
+Inside the panel, in a header row: the session title, **+ New**, and **History** —
+which drops a session list *under the button*, in the panel. Switching conversation
+should not send you to another part of the window, so it does not focus the sidebar
+view. Rows mark which sessions have a tab open and which one you are looking at;
+picking the current one does nothing rather than pointlessly resuming it.
+
+The sidebar list and this one are built by the same `SessionCatalog`, so a single
+metadata cache serves both instead of each filling its own.
+
+Model and reasoning effort sit in the composer, next to the context ring; Stop
+appears there while a turn runs. The ring is left-aligned with them — against the
+right edge it read as if it belonged to the Send button.
 
 They started in the editor title bar, following Claude Code, and that was the wrong
 read of what Claude Code does. Its `navigation` icons are only *Open*, *Open in

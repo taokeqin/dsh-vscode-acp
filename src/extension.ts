@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { AcpConnection } from './acp/connection';
 import { ChatPanel, CHAT_VIEW_TYPE } from './panel/chatPanel';
 import { SessionsViewProvider } from './panel/sessionsView';
+import { SessionCatalog } from './sessionCatalog';
 
 let connection: AcpConnection | null = null;
 let sessions: SessionsViewProvider | null = null;
@@ -64,7 +65,11 @@ export function activate(context: vscode.ExtensionContext): void {
     },
     onPermission: askPermission,
   });
-  sessions = new SessionsViewProvider(connection, cwd, log);
+  // One catalog behind both the sidebar list and the panel's inline list, so the
+  // metadata cache is shared rather than filled twice.
+  const catalog = new SessionCatalog(cwd, log);
+  sessions = new SessionsViewProvider(connection, cwd, log, catalog);
+  ChatPanel.useCatalog(catalog);
 
   /** Guards commands that need a folder; without one there is no cwd to bind to. */
   const requireRoot = (fn: () => void | Promise<void>) => async (): Promise<void> => {
@@ -111,6 +116,10 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand('dshAgent.openLast', requireRoot(() => sessions!.openLast())),
     vscode.commands.registerCommand('dshAgent.newSession', requireRoot(() => sessions!.newSession())),
+    // Invoked by the panel's inline session list, which passes the id.
+    vscode.commands.registerCommand('dshAgent.openSession', (id: unknown) =>
+      typeof id === 'string' ? sessions?.openSession(id) : undefined,
+    ),
     vscode.commands.registerCommand('dshAgent.refreshSessions', () => void sessions?.refresh()),
     vscode.commands.registerCommand('dshAgent.pickModel', requireRoot(async () => {
       const panel = activePanel();

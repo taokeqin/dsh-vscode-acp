@@ -13,6 +13,7 @@ import type { ConfigOption, SessionUpdate, ToolCallContent } from '../acp/types'
 import { loadTranscript } from '../history/store';
 import { inlineToText, parseMarkdown, type Block } from '../markdown';
 import { loadSkills, type Skill } from '../skills';
+import type { SessionCatalog } from '../sessionCatalog';
 import { decorateFileRefs, resolveInWorkspace } from '../decorateFileRefs';
 import { parseFileRef } from '../fileRef';
 import { pickSessionColumn } from '../panelColumn';
@@ -95,6 +96,18 @@ export const CHAT_VIEW_TYPE = 'dshAgent.chatPanel';
 export class ChatPanel {
   /** Open panels by sessionId — the source of truth for "is this session open". */
   private static readonly open = new Map<string, ChatPanel>();
+  /**
+   * The shared session catalog, used by the inline History popup.
+   *
+   * Static because every panel needs it and panels are constructed from a static
+   * factory; set once at activation alongside the sidebar's copy.
+   */
+  private static catalog: SessionCatalog | null = null;
+
+  static useCatalog(catalog: SessionCatalog): void {
+    ChatPanel.catalog = catalog;
+  }
+
   /** Notified whenever the set of open panels or the active one changes. */
   private static readonly changeEmitter = new vscode.EventEmitter<void>();
   static readonly onDidChangeOpen = ChatPanel.changeEmitter.event;
@@ -343,7 +356,10 @@ export class ChatPanel {
         await vscode.commands.executeCommand('dshAgent.newSession');
         break;
       case 'showSessions':
-        await vscode.commands.executeCommand('dshAgent.focus');
+        await this.sendSessionList();
+        break;
+      case 'openSession':
+        await vscode.commands.executeCommand('dshAgent.openSession', msg.id);
         break;
     }
   }
@@ -583,6 +599,8 @@ export class ChatPanel {
       // long session does not accumulate every message it ever streamed.
       this.streamText.clear();
       this.post({ type: 'turnEnd', stopReason: res.stopReason });
+      // A session is titled from its first message, so the cached title is now stale.
+      ChatPanel.catalog?.invalidate(this.sessionId);
       ChatPanel.changeEmitter.fire(); // A title may exist now that a turn completed.
     } catch (err) {
       this.post({ type: 'notice', text: `Turn failed: ${String(err)}`, tone: 'error' });
@@ -590,6 +608,25 @@ export class ChatPanel {
       this.pushState();
       ChatPanel.syncBusyContext();
     }
+  }
+
+  /**
+   * Sends the session list for the panel's inline History popup.
+   *
+   * Kept in the panel rather than focusing the sidebar view: switching conversation
+   * should not move the user to another part of the window.
+   */
+  private async sendSessionList(): Promise<void> {
+    const catalog = ChatPanel.catalog;
+    if (!catalog) return;
+    let rows;
+    try {
+      rows = await catalog.rows(this.connection, ChatPanel.openSessionIds(), this.sessionId);
+    } catch (err) {
+      this.log(`[sessions] inline list failed: ${String(err)}`);
+      return;
+    }
+    this.post({ type: 'sessionList', items: rows });
   }
 
   /** Applies a composer dropdown change to this session. */

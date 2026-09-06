@@ -8,8 +8,9 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { AcpConnection } from '../acp/connection';
-import { listSessionIdsOnDisk, loadSessionMeta, type SessionMeta } from '../history/store';
-import { orderSessions, pickPreferredSession } from '../sessionOrder';
+import { listSessionIdsOnDisk, type SessionMeta } from '../history/store';
+import { pickPreferredSession } from '../sessionOrder';
+import type { SessionCatalog } from '../sessionCatalog';
 import { ChatPanel } from './chatPanel';
 import { sessionsHtml, type SessionsInbound, type SessionsOutbound } from './sessionsHtml';
 
@@ -34,16 +35,13 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
    * once and both stay in sync from a single refresh.
    */
   private readonly views = new Set<vscode.WebviewView>();
-  /**
-   * Session metadata cache. A miss costs a file read plus a bounded zstd decode
-   * (~2 ms); titles never change once dsh writes them, so hits are safe to reuse.
-   */
-  private readonly metaCache = new Map<string, SessionMeta>();
 
   constructor(
     private readonly connection: AcpConnection,
     private readonly workspaceRoot: string,
     private readonly log: (line: string) => void,
+    /** Shared with the panel's inline list, so one metadata cache serves both. */
+    private readonly catalog: SessionCatalog,
   ) {
     // Opening, closing or switching tabs changes what this list should show.
     ChatPanel.onDidChangeOpen(() => void this.refresh());
@@ -79,76 +77,16 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private dshHome(): string {
-    return process.env.DSH_HOME ?? path.join(homedir(), '.dsh');
-  }
-
-  /** Cached metadata for one session. Never throws. */
-  private async metaFor(sessionId: string): Promise<SessionMeta> {
-    const hit = this.metaCache.get(sessionId);
-    if (hit && hit.title !== null) return hit;
-    let meta: SessionMeta;
-    try {
-      meta = await loadSessionMeta(this.dshHome(), sessionId, this.workspaceRoot);
-    } catch {
-      meta = {
-        sessionId, title: null, createdAt: null, updatedAt: null, cwd: null, delegationDepth: null,
-      };
-    }
-    this.metaCache.set(sessionId, meta);
-    return meta;
-  }
-
-  /**
-   * Rebuilds the list.
-   *
-   * Sessions are enumerated from disk rather than from the agent, so the list
-   * renders on a fresh window before anything has been spawned. Requiring a running
-   * agent was a bug: a reloaded window showed an empty list and "agent not started"
-   * even with sessions on disk, because the process is only started lazily.
-   *
-   * Three sources are merged:
-   *   · on-disk sessions for this workspace  (works with no agent)
-   *   · session/list when the agent is up    (authoritative for resumability)
-   *   · sessions with an open tab            (absent from session/list, which
-   *                                           returns only INACTIVE sessions)
-   */
+  /** Rebuilds the list from the shared catalog. */
   async refresh(): Promise<void> {
     if (this.views.size === 0) return;
-    const openIds = ChatPanel.openSessionIds();
-    const activeId = ChatPanel.activeSessionId();
-
-    const ids = new Set<string>(openIds);
-    try {
-      for (const id of listSessionIdsOnDisk(this.dshHome(), this.workspaceRoot)) ids.add(id);
-    } catch (err) {
-      this.log(`[sessions] disk scan failed: ${String(err)}`);
-    }
-    if (this.connection.running) {
-      try {
-        for (const s of await this.connection.listSessions()) ids.add(s.sessionId);
-      } catch (err) {
-        this.log(`[sessions] list failed: ${String(err)}`);
-      }
-    }
-
-    const metas = await Promise.all([...ids].map((id) => this.metaFor(id)));
-    // Drop delegated sub-agent runs: only depth 0 is a conversation the user started.
-    // This is what session/list means by "root sessions"; the disk holds both.
-    // Delegated sub-agent runs are dropped and ordering rules live in sessionOrder.
-    const roots = orderSessions(metas, openIds);
-
-    this.post({
-      type: 'sessions',
-      items: roots.map((m) => ({
-        id: m.sessionId,
-        title: m.title ?? 'new session',
-        when: relativeTime(m.updatedAt),
-        open: openIds.includes(m.sessionId),
-        active: m.sessionId === activeId,
-      })),
-    });
-    const count = `${roots.length} session${roots.length === 1 ? '' : 's'}`;
+    const rows = await this.catalog.rows(
+      this.connection,
+      ChatPanel.openSessionIds(),
+      ChatPanel.activeSessionId(),
+    );
+    this.post({ type: 'sessions', items: rows });
+    const count = `${rows.length} session${rows.length === 1 ? '' : 's'}`;
     this.post({
       type: 'status',
       text: this.connection.running ? `${count} · ${this.connection.agentName}` : `${count} · agent idle`,
@@ -157,7 +95,7 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
 
   /** Invalidates one session's cached title, e.g. after its first turn. */
   invalidate(sessionId: string): void {
-    this.metaCache.delete(sessionId);
+    this.catalog.invalidate(sessionId);
   }
 
   /**
@@ -180,8 +118,8 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
     }
     let candidates: SessionMeta[] = [];
     try {
-      const ids = listSessionIdsOnDisk(this.dshHome(), this.workspaceRoot);
-      const metas = await Promise.all(ids.map((id) => this.metaFor(id)));
+      const ids = listSessionIdsOnDisk(process.env.DSH_HOME ?? path.join(homedir(), '.dsh'), this.workspaceRoot);
+      const metas = await Promise.all(ids.map((id) => this.catalog.metaFor(id)));
       candidates = metas;
     } catch (err) {
       this.log(`[sessions] openLast scan failed: ${String(err)}`);
@@ -235,7 +173,7 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
       existing.reveal();
       return;
     }
-    const meta = await this.metaFor(sessionId);
+    const meta = await this.catalog.metaFor(sessionId);
     try {
       await this.connection.resume(sessionId);
     } catch (err) {

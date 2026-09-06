@@ -89,6 +89,10 @@
         "command": "dshAgent.restart",
         "title": "DSH: Restart Agent Process",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "dshAgent.openSession",
+        "title": "DSH: Open Session"
       }
     ],
     "menus": {
