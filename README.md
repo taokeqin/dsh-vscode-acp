@@ -233,6 +233,13 @@ Discovery runs cheapest-first and only the last step spawns anything:
    then volta, fnm, asdf, bun, homebrew, `~/.npm-global`
 4. the login shell's own PATH (`$SHELL -lic 'command -v dsh'`), with a 5 s timeout
 
+The Windows branches differ throughout and are **simulated in tests, not verified on
+a Windows host**: the PATH separator is `;`, an npm CLI is a `.cmd` shim so a bare
+name finds nothing, the candidate directories live under `APPDATA`/`LOCALAPPDATA`,
+and there is no login-shell step. Path joining picks `path.win32` or `path.posix`
+from the target platform rather than following the host, which is what lets those
+branches be exercised from macOS at all.
+
 If all four fail, the error names `dshAgent.executablePath` and offers a button that
 opens that setting.
 

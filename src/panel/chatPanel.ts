@@ -5,7 +5,6 @@
 // Panels are registered by sessionId so a second request reveals the existing tab.
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { AcpConnection } from '../acp/connection';
@@ -14,6 +13,7 @@ import { loadTranscript } from '../history/store';
 import { inlineToText, parseMarkdown, type Block } from '../markdown';
 import { loadSkills, type Skill } from '../skills';
 import type { SessionCatalog } from '../sessionCatalog';
+import { dshHome } from '../dshHome';
 import { decorateFileRefs, resolveInWorkspace } from '../decorateFileRefs';
 import { parseFileRef } from '../fileRef';
 import { pickSessionColumn } from '../panelColumn';
@@ -425,7 +425,7 @@ export class ChatPanel {
     let result: Awaited<ReturnType<typeof loadTranscript>>;
     try {
       result = await loadTranscript({
-        dshHome: process.env.DSH_HOME ?? path.join(homedir(), '.dsh'),
+        dshHome: dshHome(),
         sessionId: this.sessionId,
         cwd: this.workspaceRoot,
         maxEntries: cfg.get<number>('replayMaxEntries', 200),

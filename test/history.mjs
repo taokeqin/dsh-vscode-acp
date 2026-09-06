@@ -12,7 +12,7 @@ const check = async (n, fn) => { try { await fn(); console.log('  ✓ ' + n); } 
 
 console.log('\n1. cwd slug');
 await check('wraps joined segments in --', () =>
-  assert.equal(slugForCwd('/Users/hacken/Code/egi/business-central'), '--Users-hacken-Code-egi-business-central--'));
+  assert.equal(slugForCwd('/a/b/c-d'), '--a-b-c-d--'));
 await check('keeps hyphens inside a segment', () =>
   assert.equal(slugForCwd('/a/b-c'), '--a-b-c--'));
 
@@ -177,7 +177,9 @@ for (const [sid] of loaded) { const m = await loadSessionMeta(DSH_HOME, sid); if
 console.log(`  ${titled}/${loaded.length} sessions have a usable title`);
 
 console.log('\n6. on-disk session listing (the sidebar path, no agent needed)');
-const here = '/Users/hacken/Code/dsh-vscode-acp';
+// Derived, not hardcoded: the suite runs from the repo root, and this workspace has
+// its own sessions on any machine that has used the extension here.
+const here = process.cwd();
 const diskIds = listSessionIdsOnDisk(DSH_HOME, here);
 console.log(`  ${diskIds.length} sessions found for ${here}`);
 await check('finds this workspace\'s sessions without an agent', () => assert.ok(diskIds.length > 0));

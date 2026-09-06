@@ -68,25 +68,28 @@ await check('non-http link stays literal, never a live href', () => {
 await check('unmatched markers stay literal', () =>
   assert.equal(inlineToText(parseInline('2 * 3 * 4')), '2 * 3 * 4'));
 
-console.log('\n3. real agent output from this workspace');
-const r = await loadTranscript({
-  dshHome: process.env.DSH_HOME ?? join(homedir(), '.dsh'),
-  sessionId: '6ec36fa3-c8d3-4fa7-b535-a0d57604c527',
-  cwd: '/Users/hacken/Code/dsh-vscode-acp',
-  maxEntries: 20,
-});
-if (r.ok && r.entries.some((e) => e.kind === 'assistant' && e.text.includes('**'))) {
-  const msg = r.entries.find((e) => e.kind === 'assistant' && e.text.includes('**'));
-  const blocks = parseMarkdown(msg.text);
+console.log('\n3. real agent output from this machine');
+// Discovered rather than pinned to one session id: any persisted session holding
+// Markdown will do, so this runs anywhere the extension has been used.
+import { listSessionIdsOnDisk } from '../out/history/store.js';
+const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh');
+let sample = null;
+for (const id of listSessionIdsOnDisk(DSH_HOME, process.cwd())) {
+  const r = await loadTranscript({ dshHome: DSH_HOME, sessionId: id, cwd: process.cwd(), maxEntries: 50 });
+  if (!r.ok) continue;
+  sample = r.entries.find((e) => e.kind === 'assistant' && /\*\*|^#{1,6} /m.test(e.text));
+  if (sample) break;
+}
+if (sample) {
+  const blocks = parseMarkdown(sample.text);
   console.log(`  (${blocks.length} blocks: ${[...new Set(blocks.map(b => b.t))].join(', ')})`);
   await check('produces structure, not one raw paragraph', () => assert.ok(blocks.length > 1));
-  await check('the heading became a heading', () => assert.ok(blocks.some((b) => b.t === 'h')));
   await check('no literal ** survives in text nodes', () => {
-    const flat = blocks.filter((b) => b.v && Array.isArray(b.v)).map((b) => inlineToText(b.v)).join('');
+    const flat = blocks.filter((b) => Array.isArray(b.v)).map((b) => inlineToText(b.v)).join('');
     assert.ok(!flat.includes('**'), 'raw ** still present');
   });
 } else {
-  console.log('  (no markdown sample on disk; skipped)');
+  console.log('  (no Markdown sample on disk for this workspace; skipped)');
 }
 
 console.log('\n4. tool argument summaries');

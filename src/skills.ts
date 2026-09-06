@@ -10,8 +10,8 @@
 // `<name>.md`, at the TOP level of a root only — nested `**/SKILL.md` is deliberately
 // not discovered. YAML frontmatter requires `name` and `description`.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { agentsHome, dshHome } from './dshHome';
 
 export interface Skill {
   name: string;
@@ -153,12 +153,12 @@ export function discoverSkills(roots: SkillRoot[]): Skill[] {
 }
 
 /** Convenience wrapper using the default roots. */
-export function loadSkills(projectRoot: string, dshHome?: string, agentsHome?: string): Skill[] {
+export function loadSkills(projectRoot: string, dshHomeOverride?: string, agentsHomeOverride?: string): Skill[] {
   return discoverSkills(
     defaultSkillRoots(
       projectRoot,
-      dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh'),
-      agentsHome ?? join(homedir(), '.agents'),
+      dshHomeOverride ?? dshHome(),
+      agentsHomeOverride ?? agentsHome(),
     ),
   );
 }

@@ -4,13 +4,12 @@
 // one as an editor tab. Sessions with an open tab are marked, and the visible tab is
 // highlighted, so the list doubles as an overview of what is currently open.
 import { randomBytes } from 'node:crypto';
-import { homedir } from 'node:os';
-import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { AcpConnection } from '../acp/connection';
 import { listSessionIdsOnDisk, type SessionMeta } from '../history/store';
 import { pickPreferredSession } from '../sessionOrder';
 import type { SessionCatalog } from '../sessionCatalog';
+import { dshHome } from '../dshHome';
 import { ChatPanel } from './chatPanel';
 import { sessionsHtml, type SessionsInbound, type SessionsOutbound } from './sessionsHtml';
 
@@ -118,7 +117,7 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
     }
     let candidates: SessionMeta[] = [];
     try {
-      const ids = listSessionIdsOnDisk(process.env.DSH_HOME ?? path.join(homedir(), '.dsh'), this.workspaceRoot);
+      const ids = listSessionIdsOnDisk(dshHome(), this.workspaceRoot);
       const metas = await Promise.all(ids.map((id) => this.catalog.metaFor(id)));
       candidates = metas;
     } catch (err) {

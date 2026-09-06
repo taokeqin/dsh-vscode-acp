@@ -3,8 +3,7 @@
 // Both surfaces need the same rows, and both need the metadata cache behind them, so
 // the assembly lives here instead of being duplicated. One instance is created at
 // activation and handed to both.
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dshHome } from './dshHome';
 import type { AcpConnection } from './acp/connection';
 import { listSessionIdsOnDisk, loadSessionMeta, type SessionMeta } from './history/store';
 import { orderSessions } from './sessionOrder';
@@ -45,17 +44,13 @@ export class SessionCatalog {
     private readonly log: (line: string) => void,
   ) {}
 
-  private dshHome(): string {
-    return process.env.DSH_HOME ?? join(homedir(), '.dsh');
-  }
-
   /** Cached metadata for one session. Never throws. */
   async metaFor(sessionId: string): Promise<SessionMeta> {
     const hit = this.meta.get(sessionId);
     if (hit && hit.title !== null) return hit;
     let meta: SessionMeta;
     try {
-      meta = await loadSessionMeta(this.dshHome(), sessionId, this.workspaceRoot);
+      meta = await loadSessionMeta(dshHome(), sessionId, this.workspaceRoot);
     } catch {
       meta = {
         sessionId, title: null, createdAt: null, updatedAt: null, cwd: null, delegationDepth: null,
@@ -86,7 +81,7 @@ export class SessionCatalog {
   ): Promise<SessionRow[]> {
     const ids = new Set<string>(openIds);
     try {
-      for (const id of listSessionIdsOnDisk(this.dshHome(), this.workspaceRoot)) ids.add(id);
+      for (const id of listSessionIdsOnDisk(dshHome(), this.workspaceRoot)) ids.add(id);
     } catch (err) {
       this.log(`[sessions] disk scan failed: ${String(err)}`);
     }
