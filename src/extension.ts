@@ -4,6 +4,7 @@
 // an editor tab (ChatPanel); the sidebar is a session list (SessionsViewProvider).
 import * as vscode from 'vscode';
 import { AcpConnection } from './acp/connection';
+import type { RequestPermissionParams } from './acp/types';
 import { ChatPanel, CHAT_VIEW_TYPE } from './panel/chatPanel';
 import { SessionsViewProvider } from './panel/sessionsView';
 import { SessionCatalog } from './sessionCatalog';
@@ -30,7 +31,7 @@ function resolveRoot(): string | null {
 
 /** Answers a permission prompt. Rarely fires: the acp profile auto-approves tool use. */
 async function askPermission(params: unknown): Promise<string | null> {
-  const p = params as { toolCall?: { title?: string }; options?: { optionId: string; name?: string }[] };
+  const p = params as RequestPermissionParams;
   const options = p.options ?? [];
   if (options.length === 0) return null;
   const labels = options.map((o) => o.name ?? o.optionId);

@@ -1,24 +1,50 @@
 {
   "name": "dsh-agent",
   "displayName": "DSH Agent",
-  "description": "Chat with the DeepSeek Harness coding agent inside VS Code over ACP (Agent Client Protocol). Unofficial.",
+  "description": "Chat with the DeepSeek Harness (dsh) coding agent inside VS Code, over ACP. Unofficial — not affiliated with DeepSeek.",
   "version": "0.2.0",
-  "publisher": "local",
-  "private": true,
+  "publisher": "set-your-publisher-id",
   "license": "MIT",
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.91.0"
   },
   "categories": [
+    "AI",
+    "Chat",
     "Other"
   ],
-  "main": "./out/extension.js",
+  "keywords": [
+    "dsh",
+    "deepseek",
+    "deepseek-harness",
+    "acp",
+    "agent-client-protocol",
+    "ai",
+    "agent",
+    "chat",
+    "coding-agent"
+  ],
+  "galleryBanner": {
+    "color": "#4D6BFE",
+    "theme": "dark"
+  },
+  "qna": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/REPLACE_ME/dsh-vscode-acp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/REPLACE_ME/dsh-vscode-acp/issues"
+  },
+  "homepage": "https://github.com/REPLACE_ME/dsh-vscode-acp#readme",
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
       "description": "The extension spawns the dsh agent, which reads and writes files in the workspace."
     }
   },
+  "main": "./out/extension.js",
   "activationEvents": [
     "onView:dshAgent.sessions",
     "onWebviewPanel:dshAgent.chatPanel"
@@ -183,11 +209,13 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "compile": "npm run clean && tsc -p ./",
     "watch": "tsc -w -p ./",
     "typecheck": "tsc --noEmit -p ./",
     "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies -o dsh-agent.vsix",
-    "test": "npm run compile && node test/menus.mjs && node test/locate.mjs && node test/markdown.mjs && node test/file-ref.mjs && node test/file-refs-decorate.mjs && node test/skills.mjs && node test/slash-menu.mjs && node test/composer-keys.mjs && node test/session-order.mjs && node test/panel-column.mjs && node test/gui-launch.mjs && node test/smoke.mjs && node test/history.mjs"
+    "test": "npm run compile && node test/menus.mjs && node test/locate.mjs && node test/markdown.mjs && node test/file-ref.mjs && node test/file-refs-decorate.mjs && node test/skills.mjs && node test/slash-menu.mjs && node test/composer-keys.mjs && node test/session-order.mjs && node test/panel-column.mjs && node test/gui-launch.mjs && node test/smoke.mjs && node test/history.mjs",
+    "clean": "node -e \"require('node:fs').rmSync('out',{recursive:true,force:true})\"",
+    "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

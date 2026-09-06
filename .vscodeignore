@@ -1,8 +1,10 @@
 src/**
 test/**
 node_modules/**
+.vscode/**
 tsconfig.json
 .gitignore
 .vscodeignore
 **/*.map
 *.vsix
+media/marketplace-icon.svg

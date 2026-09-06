@@ -1,9 +1,88 @@
-# DSH Agent (unofficial)
+# DSH Agent
 
-A VS Code panel for the [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)
-coding agent, driven over **ACP** (Agent Client Protocol) on stdio.
+Chat with the [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)
+(`dsh`) coding agent inside VS Code, over ACP — the Agent Client Protocol.
 
-Not affiliated with DeepSeek.
+> **Unofficial.** Not affiliated with, endorsed by, or supported by DeepSeek.
+> `dsh` and DeepSeek Harness are their names, not this project's.
+
+Sessions are ordinary editor tabs, the transcript renders as Markdown, and the agent
+runs as a child process over stdio — no local web server and no port to secure.
+
+## Requirements
+
+- VS Code ^1.91.0
+- `dsh` installed and working: `npm i -g @deepseek-ai/dsh`, then run `dsh --profile acp --help`
+  once to confirm it starts. Built against dsh `0.1.2-rc.1`.
+- A folder open in VS Code. Sessions bind to one workspace root.
+
+The extension finds `dsh` even when VS Code was launched from the Dock and cannot see
+your shell PATH; if discovery fails it tells you to set `dshAgent.executablePath`.
+
+## Getting started
+
+1. Open the **DSH** view in the secondary (right) sidebar — `Cmd/Ctrl+Alt+B` toggles it.
+2. Press **+** to start a session. It opens as an editor tab beside your code.
+3. Type. `Enter` sends, `Shift+Enter` adds a newline.
+
+The whale in the editor title bar (**DSH: Open**) reopens your most recent
+conversation from any file.
+
+## Features
+
+- **Sessions as editor tabs** — close, drag, split and *Reopen Closed Editor* all work,
+  and tabs survive a window reload. Their group is locked so files never open into it.
+- **History restored from disk** — ACP replays nothing on resume, so the transcript is
+  rebuilt from dsh's own session log.
+- **Markdown transcript** — headings, code, lists, tables, and file references that
+  open at the cited line.
+- **Skills** — type `/` at the start of a line for the skill catalog.
+- **Model and reasoning effort** — per session, in the composer, alongside a context
+  usage ring.
+
+## Commands
+
+| Command |
+|---|
+| `DSH: Open` |
+| `DSH: Session History` |
+| `DSH: New Session` |
+| `DSH: Refresh Sessions` |
+| `DSH: Cancel Current Turn` |
+| `DSH: Send Selection to Agent` |
+| `DSH: Select Model` |
+| `DSH: Show Logs` |
+| `DSH: Restart Agent Process` |
+| `DSH: Open Session` |
+
+## Settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `dshAgent.executablePath` | `"dsh"` | Absolute path to the `dsh` executable. |
+| `dshAgent.profile` | `"acp"` | The dsh profile to boot. |
+| `dshAgent.resumeLatestSession` | `true` | On open, resume the most recent persisted session for this workspace instead of creating a new one. |
+| `dshAgent.showThoughts` | `true` | Render the agent's reasoning (`agent_thought_chunk`) in a collapsed block. |
+| `dshAgent.replayHistory` | `true` | On resume, rebuild the transcript from dsh's on-disk session log. |
+| `dshAgent.replayMaxEntries` | `200` | Maximum restored transcript entries (most recent kept). |
+| `dshAgent.panelColumn` | `"Beside"` | Where a session tab opens. |
+| `dshAgent.lockEditorGroup` | `true` | Lock the editor group holding session tabs, so opening a file lands in your code group instead of stacking on top of the conversation. |
+
+## Known limits
+
+- **No slash commands.** ACP exposes no command adapter, and dsh's commands are
+  plugin-registered handlers rather than prompt templates, so there is no client-side
+  equivalent. Skills work because they are files.
+- **No images, MCP mounts, plans or todos** over ACP. See the notes below.
+- **The agent writes files without asking.** The shipped `acp` profile auto-approves
+  tool use; see Security notes.
+- **Windows is untested.** The code paths exist and are covered by simulated tests,
+  but no Windows host was available.
+
+---
+
+The rest of this document is engineering detail: what was measured, what surprised
+us, and why the design is what it is.
 
 ## Why ACP and not the web GUI
 
