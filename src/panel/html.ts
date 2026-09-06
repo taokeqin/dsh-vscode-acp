@@ -30,12 +30,19 @@ export type PanelInbound =
   | { type: 'cancel' }
   | { type: 'openPath'; path: string; line?: number; endLine?: number }
   | { type: 'openExternal'; url: string }
-  | { type: 'setOption'; id: string; value: string };
+  | { type: 'setOption'; id: string; value: string }
+  | { type: 'newSession' }
+  | { type: 'showSessions' };
 
 /** Messages the extension host posts down to the webview. */
 export type PanelOutbound =
   /** `options` are the agent's advertised config options (model, reasoning effort). */
-  | { type: 'state'; busy: boolean; sessionId: string | null; options: ConfigOptionView[]; skills: SkillView[] }
+  | {
+      type: 'state'; busy: boolean; sessionId: string | null;
+      options: ConfigOptionView[]; skills: SkillView[];
+      /** Shown in the panel header, so the tab does not have to carry it. */
+      title: string;
+    }
   /** Text to drop at the caret, e.g. a chosen skill reference. */
   | { type: 'insert'; text: string }
   | { type: 'user'; blocks: Block[] }
@@ -68,6 +75,24 @@ body {
   font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px);
   color: var(--vscode-foreground); background: var(--vscode-sideBar-background);
 }
+/* Actions live in the panel, not the editor title bar. Title-bar menus are scoped by
+   global context keys, which made them render over other groups and blink with
+   focus; a header inside the webview is simply always where the conversation is. */
+#head {
+  display: flex; align-items: center; gap: 6px; flex: none;
+  padding: 6px 8px; border-bottom: 1px solid var(--vscode-panel-border);
+}
+#head .title {
+  flex: 1; font-size: 0.92em; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#head button {
+  flex: none; padding: 2px 8px; font-size: 0.86em; line-height: 1.5;
+  background: transparent; color: var(--vscode-foreground); opacity: 0.75;
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+  border-radius: 3px; cursor: pointer;
+}
+#head button:hover { background: var(--vscode-list-hoverBackground); opacity: 1; }
 #log { flex: 1; overflow-y: auto; padding: 10px 10px 4px; }
 .msg { margin-bottom: 12px; line-height: 1.6; word-break: break-word; }
 .msg > *:first-child { margin-top: 0; }
@@ -216,6 +241,10 @@ const stopBtn = document.getElementById('stop');
 const status = document.getElementById('status');
 const opts = document.getElementById('opts');
 const slash = document.getElementById('slash');
+const headTitle = document.getElementById('head-title');
+
+document.getElementById('btn-new').onclick = () => vscode.postMessage({ type: 'newSession' });
+document.getElementById('btn-sessions').onclick = () => vscode.postMessage({ type: 'showSessions' });
 
 let busy = false;
 let usage = null; // { used, size } once the agent has reported any
@@ -696,6 +725,7 @@ window.addEventListener('message', (e) => {
       renderOptions(m.options);
       // Skills are reached by typing '/' at the start of a line; no toolbar button.
       skills = Array.isArray(m.skills) ? m.skills : [];
+      if (typeof m.title === 'string' && m.title !== '') headTitle.textContent = m.title;
       renderStatus();
       break;
     case 'insert': insertAtCaret(String(m.text ?? '')); break;
@@ -769,6 +799,11 @@ export function chatHtml(nonce: string): string {
 <style>${STYLE}</style>
 </head>
 <body>
+<div id="head">
+  <span class="title" id="head-title">DSH</span>
+  <button id="btn-new" title="Start a new session">+ New</button>
+  <button id="btn-sessions" title="Show the session list">History</button>
+</div>
 <div id="log"></div>
 <div id="composer">
   <div id="slash" role="listbox"></div>

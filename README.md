@@ -58,169 +58,30 @@ therefore carries a fixed brand blue that reads on both — the same trick Claud
 Code's orange logo relies on. The container icon keeps `currentColor`, since VS Code
 masks and themes that one.
 
-## Buttons on a session tab
+## Where the session actions live
 
-Claude Code turns out to contribute very little to the editor title bar: only
-`editor.openLast`, `terminal.open` and the diff accept/reject get `navigation`
-icons. `newConversation` appears in the command palette alone — its own button is
-drawn inside the webview — and there is no history command at all, because history
-*is* the sessions sidebar view.
+Inside the panel, in a header row: the session title, **+ New**, and **History**.
+Model and reasoning effort sit in the composer; Stop appears there while a turn runs.
 
-What is worth copying is how it scopes the entries it does contribute — and the
-scoping needs **both** halves:
+They started in the editor title bar, following Claude Code, and that was the wrong
+read of what Claude Code does. Its `navigation` icons are only *Open*, *Open in
+Terminal* and the diff accept/reject; its session actions sit in the `…` overflow,
+and `newConversation` is registered for the command palette alone — its button is
+drawn inside the webview.
 
-```
-activeWebviewPanelId == '<viewType>' && (!resource || resourceScheme == 'webview-panel')
-```
+Two failures made the reason concrete:
 
-`activeWebviewPanelId` is a *global* context key, so on its own it is true for every
-group's title bar at once: focusing a session tab made the session actions appear
-over the code editor too. `resourceScheme` is evaluated per title bar, and that is
-what pins them to the webview tab.
+- `activeWebviewPanelId` is a **global** context key, so guarding session actions
+  with it put them in *every* group's title bar the moment a session took focus.
+- Keying the whale off `activeWebviewPanelId != …` made it vanish from the code
+  group whenever a session was focused and reappear on the way back.
 
-The whale is the mirror image. Keying it off `activeWebviewPanelId != …` made it
-vanish from the code group the moment a session took focus and reappear on the way
-back; it is keyed off `resourceScheme != 'webview-panel'` instead, so it depends on
-what that tab *is* rather than on what happens to be focused.
-
-`test/menus.mjs` pins both rules, because a wrong `when` clause raises no error — it
-just makes icons show up in the wrong place or blink.
-
-A session tab carries:
-
-| | |
-|---|---|
-| `$(add)` | New Session |
-| `$(history)` | Session History — reveals the sidebar list |
-| `$(settings-gear)` | Select Model |
-| `$(debug-stop)` | Cancel — only while a turn is in flight (`dshAgent.busy`) |
-
-Show Logs and Restart Agent sit in the `…` overflow, which is where Claude Code puts
-its own secondary actions. On any other editor the title bar shows just the whale.
-
-## Rendering
-
-Agent output is Markdown, so `**bold**`, `## headings` and `` `code` `` used to show
-as literal text. It is now rendered — headings, fenced and inline code, lists,
-blockquotes, rules and http(s) links.
-
-**Markdown is parsed in the extension host; only a node tree crosses into the
-webview**, which builds DOM from it with `createElement` and `textContent`. No HTML
-string is ever constructed from agent output, so a message cannot introduce an
-element the panel does not name. A test asserts the panel document contains no
-`innerHTML` at all, and another parses the inline webview script, which ships as a
-string and is otherwise invisible to `tsc`.
-
-Streaming re-sends the whole message rather than appending deltas: Markdown only
-parses as a whole, so a half-received code fence corrects itself once the closing
-fence lands.
-
-### File references
-
-A code span naming a real file — `` `src/panel/html.ts:42` ``, with an optional
-`:line` or `:line-line` — is rendered as a clickable reference that opens the file
-and selects the cited lines. Tool rows are clickable on the same terms, restored ones
-included.
-
-Two decisions keep this from being annoying:
-
-- **The host decides, not the webview.** Only the extension side can check the
-  filesystem, so a span becomes a link only when the path resolves *inside* the
-  workspace and *exists*. Prose is never dressed up as a link that then fails.
-- **A path that cannot be opened is not a link.** Agents legitimately read outside
-  the workspace — skills, configs — and those rows stay plain text rather than
-  clickable-then-refused. A dead link is worse than no link.
-
-Fenced code blocks are left alone: their contents are source, not prose. Line
-numbers are clamped to the document, since a reference can outlive the edit that
-shortened the file.
-
-Reasoning stays collapsed, dimmed, with the first line of it previewed on the
-summary so a folded block still says what it was about. Tool rows show the argument
-that identifies the call — `bash ls -la …`, `read src/x.ts` — instead of the raw
-JSON blob.
-
-## Composer settings, and slash commands
-
-The composer carries a dropdown for every setting the agent advertises — today
-`model` (three routes) and `reasoning_effort` (Off/Low/High/Max) — read from
-`session/new` rather than hardcoded, so a build exposing more just renders more.
-Settings are per session: changing one tab does not affect another.
-
-Context usage sits beside them as a small ring that fills as the window is consumed,
-going from neutral to yellow at 60% and red at 85%. The exact numbers are rarely
-what you want mid-conversation, so they live in the hover title —
-*"Context 12% — 118,402 of 1,000,000 tokens"*.
-
-A resumed session shows its ring immediately, recovered from the log rather than
-waiting for the next turn — knowing how much room is left is most useful *before*
-sending, not after. ACP only reports usage mid-turn, but both halves are on disk:
-`request/context` carries the window and each `assistant/message` carries the tokens
-its request consumed. The last values win, which is also what makes it correct after
-a compaction — the context shrinks and later records reflect the smaller total. The
-window is read per session rather than assumed: sessions here run at both 1,000,000
-and 1,024,000. 47 of 73 sessions on this machine yield usage, exactly the 47 that
-hold a conversation.
-
-The parameter for `session/set_config_option` is **`configId`**, not `optionId`.
-Every plausible spelling returned `-32602 Invalid params`; the right one came from
-reading the agent's own handler. Worth stating plainly because the model picker
-never worked until a test exercised it.
-
-### Skills
-
-Skills *are* recoverable, and the difference is instructive: a slash command is a
-plugin-registered handler with no client-side equivalent, whereas a skill is a
-Markdown file in a documented location. So the catalog is rebuilt by scanning the
-roots `dsh-skill-filesystem` specifies:
-
-| Rank | Source | Path |
-|---|---|---|
-| 100 | `project-dsh` | `<projectRoot>/.dsh/skills` |
-| 200 | `project-agents` | `<projectRoot>/.agents/skills` |
-| 400 | `user-dsh` | `<dshHome>/skills` |
-| 500 | `user-agents` | `<agentsHome>/skills` |
-
-A skill is `<name>/SKILL.md` or a flat `<name>.md` at a root's **top level** — nested
-`**/SKILL.md` is deliberately not discovered — with YAML frontmatter carrying a
-required `name` and `description`, plus optional `disable-model-invocation` and
-`user-invocable`. Lower rank wins a name clash.
-
-The scan was validated against dsh itself: a session log records the catalog dsh
-splices into the conversation, and the disk scan reproduces it exactly.
-
-Typing `/` at the start of a line opens the skill list **inline above the composer**
-— arrow keys to move, Enter or Tab to accept, Esc to dismiss. A quick pick was tried
-first and felt too far away: choosing a skill is part of writing the message, not a
-separate errand. There is no toolbar button; the slash is the entry point.
-
-The slash must open a line. That rule is what keeps `src/index.ts` or "and/or" from
-popping the menu mid-sentence.
-
-Accepting inserts a plain-text reference, since a skill is invoked by the model
-reading the prompt — there is no command channel to call one through.
-
-The trigger and filtering live in `src/slashMenu.ts`, and the Enter/IME decisions in
-`src/composerKeys.ts`. Both are injected into the panel script through
-`Function.prototype.toString()`, so the code the tests exercise is literally the code
-that ships — no second copy to drift.
-
-### Input methods
-
-Enter during IME composition belongs to the input method, not to us. An IME uses it
-to accept a candidate, and that keydown arrives *before* the text is committed — so
-sending on it shipped the message and then let the IME commit the accepted word into
-the emptied box, leaving the last word behind. Both `isComposing` and the legacy
-`keyCode === 229` signal are honoured, for the slash menu's navigation keys as well
-as for sending.
-
-**Slash commands are not available over ACP and cannot be faked.** `dsh-commands`
-says it directly — "UI-less demo spines and ACP automation provide no command
-adapter and do not need it", and slash commands "ship with the `dsh` CLI and the Web
-client". They are plugin-registered handlers that run "directly against the
-receiving agent without creating a model message", so they are not prompt templates
-a client could expand into text. Supporting them would need dsh to add a command
-adapter to the ACP surface.
+Adding `resourceScheme == 'webview-panel'` narrows the first case, but the whole
+approach was betting on undocumented resource semantics for something a webview can
+simply own. The editor title bar now carries only the whale, keyed off
+`resourceScheme != 'webview-panel'` — what the tab *is*, not what happens to be
+focused. Every command stays in the palette. `test/menus.mjs` asserts no menu
+depends on `activeWebviewPanelId` at all.
 
 ## Transcript replay (best effort, `dshAgent.replayHistory`)
 

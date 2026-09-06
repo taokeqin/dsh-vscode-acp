@@ -174,6 +174,7 @@ export class ChatPanel {
   /** Sets the tab label. Titles arrive late, so this is called again after turn one. */
   setTitle(title: string): void {
     this.panel.title = title;
+    this.pushState();
   }
 
   /** Where the FIRST session tab opens, from dshAgent.panelColumn. */
@@ -337,6 +338,12 @@ export class ChatPanel {
         break;
       case 'setOption':
         await this.setOption(msg.id, msg.value);
+        break;
+      case 'newSession':
+        await vscode.commands.executeCommand('dshAgent.newSession');
+        break;
+      case 'showSessions':
+        await vscode.commands.executeCommand('dshAgent.focus');
         break;
     }
   }
@@ -556,6 +563,7 @@ export class ChatPanel {
       // composer renders whatever this build exposes rather than a hardcoded list.
       options: this.connection.configOptions(this.sessionId).map(flattenOption),
       skills: this.skillViews(),
+      title: this.panel.title,
     });
   }
 
@@ -564,7 +572,10 @@ export class ChatPanel {
     if (typeof text !== 'string' || text.trim() === '') return;
     // Rendered as Markdown too: sendSelection wraps the selection in a code fence.
     this.post({ type: 'user', blocks: this.render(text) });
-    this.post({ type: 'state', busy: true, sessionId: this.sessionId, options: [], skills: this.skillViews() });
+    this.post({
+      type: 'state', busy: true, sessionId: this.sessionId,
+      options: [], skills: this.skillViews(), title: this.panel.title,
+    });
     ChatPanel.syncBusyContext();
     try {
       const res = await this.connection.prompt(this.sessionId, text);
