@@ -97,6 +97,26 @@ Streaming re-sends the whole message rather than appending deltas: Markdown only
 parses as a whole, so a half-received code fence corrects itself once the closing
 fence lands.
 
+### File references
+
+A code span naming a real file — `` `src/panel/html.ts:42` ``, with an optional
+`:line` or `:line-line` — is rendered as a clickable reference that opens the file
+and selects the cited lines. Tool rows are clickable on the same terms, restored ones
+included.
+
+Two decisions keep this from being annoying:
+
+- **The host decides, not the webview.** Only the extension side can check the
+  filesystem, so a span becomes a link only when the path resolves *inside* the
+  workspace and *exists*. Prose is never dressed up as a link that then fails.
+- **A path that cannot be opened is not a link.** Agents legitimately read outside
+  the workspace — skills, configs — and those rows stay plain text rather than
+  clickable-then-refused. A dead link is worse than no link.
+
+Fenced code blocks are left alone: their contents are source, not prose. Line
+numbers are clamped to the document, since a reference can outlive the edit that
+shortened the file.
+
 Reasoning stays collapsed, dimmed, with the first line of it previewed on the
 summary so a folded block still says what it was about. Tool rows show the argument
 that identifies the call — `bash ls -la …`, `read src/x.ts` — instead of the raw

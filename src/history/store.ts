@@ -23,7 +23,11 @@ import * as zlib from 'node:zlib';
 export type HistoryEntry =
   | { kind: 'user'; text: string }
   | { kind: 'assistant'; text: string; reasoning: string }
-  | { kind: 'tool'; id: string; name: string; detail: string; failed: boolean };
+  | {
+      kind: 'tool'; id: string; name: string; detail: string; failed: boolean;
+      /** Path argument, when the call named one — lets a restored row be clickable. */
+      path?: string;
+    };
 
 /** Context consumption at the end of the log, matching ACP's usage_update shape. */
 export interface HistoryUsage {
@@ -172,6 +176,31 @@ async function decompressZstd(
  * "description": "List files"}` — so the field that actually identifies the call is
  * pulled out. Order matters: a bash call is its command, a file tool is its path.
  */
+/** Argument keys that name a file, in preference order. */
+const PATH_ARG_KEYS = ['file_path', 'path', 'filePath', 'notebook_path'];
+
+/**
+ * Extracts the file a tool call operated on, so a restored tool row can be clicked
+ * through to the file the same way a live one can.
+ */
+export function pathFromToolArgs(argsJson: string): string | undefined {
+  const raw = typeof argsJson === 'string' ? argsJson.trim() : '';
+  if (raw === '') return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object') return undefined;
+  const obj = parsed as Record<string, unknown>;
+  for (const key of PATH_ARG_KEYS) {
+    const v = obj[key];
+    if (typeof v === 'string' && v.trim() !== '') return v.trim();
+  }
+  return undefined;
+}
+
 export function summariseToolArgs(argsJson: string): string {
   const raw = typeof argsJson === 'string' ? argsJson.trim() : '';
   if (raw === '') return '';
@@ -231,6 +260,7 @@ export function parseTranscript(jsonl: string, maxEntries: number): HistoryResul
   /** tool callId → name and argument summary, learned from the tool/call that precedes each result. */
   const toolNames = new Map<string, string>();
   const toolArgs = new Map<string, string>();
+  const toolPaths = new Map<string, string>();
   let scanned = 0;
 
   for (const line of jsonl.split('\n')) {
@@ -251,7 +281,11 @@ export function parseTranscript(jsonl: string, maxEntries: number): HistoryResul
     if (type === 'tool/call') {
       const d = rec.data as { callId?: string; name?: string; arguments?: string } | undefined;
       if (d?.callId && typeof d.name === 'string') toolNames.set(d.callId, d.name);
-      if (d?.callId && typeof d.arguments === 'string') toolArgs.set(d.callId, summariseToolArgs(d.arguments));
+      if (d?.callId && typeof d.arguments === 'string') {
+        toolArgs.set(d.callId, summariseToolArgs(d.arguments));
+        const p = pathFromToolArgs(d.arguments);
+        if (p !== undefined) toolPaths.set(d.callId, p);
+      }
       continue;
     }
     if (type === undefined || !SURFACE_TYPES.has(type)) continue;
@@ -287,12 +321,14 @@ export function parseTranscript(jsonl: string, maxEntries: number): HistoryResul
       const detail = args !== ''
         ? args
         : textOfBlocks(block.content).replace(/\s+/g, ' ').trim().slice(0, 120);
+      const refPath = toolPaths.get(block.toolCallId);
       entries.push({
         kind: 'tool',
         id: block.toolCallId,
         name: toolNames.get(block.toolCallId) ?? 'tool',
         detail,
         failed: block.isError === true,
+        ...(refPath === undefined ? {} : { path: refPath }),
       });
     }
   }

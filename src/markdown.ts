@@ -15,7 +15,13 @@ export type Inline =
   | { t: 'code'; v: string }
   | { t: 'strong'; v: Inline[] }
   | { t: 'em'; v: Inline[] }
-  | { t: 'link'; v: Inline[]; href: string };
+  | { t: 'link'; v: Inline[]; href: string }
+  /**
+   * A file reference the host confirmed exists in the workspace. Never produced by
+   * the parser — decorateFileRefs rewrites `code` nodes into these, because only the
+   * host can check the filesystem.
+   */
+  | { t: 'file'; v: string; path: string; line?: number; endLine?: number };
 
 /** Top-level block. */
 export type Block =
@@ -159,6 +165,6 @@ export function parseMarkdown(src: string): Block[] {
 /** Plain-text rendering, for one-line previews such as a collapsed thought summary. */
 export function inlineToText(nodes: Inline[]): string {
   return nodes
-    .map((n) => (n.t === 'text' || n.t === 'code' ? n.v : inlineToText(n.v)))
+    .map((n) => (n.t === 'text' || n.t === 'code' || n.t === 'file' ? n.v : inlineToText(n.v)))
     .join('');
 }

@@ -4,6 +4,7 @@
 // tab groups are VS Code's behaviour rather than something reimplemented in a webview.
 // Panels are registered by sessionId so a second request reveals the existing tab.
 import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -12,6 +13,8 @@ import type { ConfigOption, SessionUpdate, ToolCallContent } from '../acp/types'
 import { loadTranscript } from '../history/store';
 import { inlineToText, parseMarkdown, type Block } from '../markdown';
 import { loadSkills, type Skill } from '../skills';
+import { decorateFileRefs, resolveInWorkspace } from '../decorateFileRefs';
+import { parseFileRef } from '../fileRef';
 import { pickSessionColumn } from '../panelColumn';
 import { chatHtml, type ConfigOptionView, type PanelInbound, type PanelOutbound, type SkillView } from './html';
 
@@ -258,6 +261,32 @@ export class ChatPanel {
     void this.panel.webview.postMessage(msg);
   }
 
+  /**
+   * Parses Markdown and decorates the file references in it.
+   *
+   * Every rendered message goes through here so a path is clickable wherever it
+   * appears — a streaming answer, a restored transcript, or the user's own message.
+   */
+  /**
+   * A path is offered as clickable only when it resolves inside the workspace and
+   * exists, so no row or span is a link that refuses on click.
+   */
+  private clickablePath(raw: string | undefined): { path: string; line?: number } | null {
+    if (!raw) return null;
+    const ref = parseFileRef(raw);
+    if (!ref) return null;
+    const deps = { workspaceRoot: this.workspaceRoot, exists: (p: string) => existsSync(p) };
+    if (resolveInWorkspace(ref.path, deps) === null) return null;
+    return { path: ref.path, ...(ref.line === undefined ? {} : { line: ref.line }) };
+  }
+
+  private render(text: string): Block[] {
+    return decorateFileRefs(parseMarkdown(text), {
+      workspaceRoot: this.workspaceRoot,
+      exists: (p) => existsSync(p),
+    });
+  }
+
   private async onMessage(msg: PanelInbound): Promise<void> {
     switch (msg.type) {
       case 'ready':
@@ -274,7 +303,7 @@ export class ChatPanel {
         this.connection.cancel(this.sessionId);
         break;
       case 'openPath':
-        await this.openPath(msg.path);
+        await this.openPath(msg.path, msg.line, msg.endLine);
         break;
       case 'openExternal':
         await ChatPanel.openExternal(msg.url);
@@ -300,7 +329,7 @@ export class ChatPanel {
    * Opens a file the agent touched, confined to the workspace: the path comes from
    * agent output, so an absolute path pointing outside the project is refused.
    */
-  private async openPath(raw: string): Promise<void> {
+  private async openPath(raw: string, line?: number, endLine?: number): Promise<void> {
     if (typeof raw !== 'string' || raw === '') return;
     const abs = path.resolve(this.workspaceRoot, raw);
     const rel = path.relative(this.workspaceRoot, abs);
@@ -311,10 +340,20 @@ export class ChatPanel {
     try {
       // Column One, not Beside: the chat usually sits in the right-hand column, so
       // "beside" would stack code on top of it instead of next to it.
-      await vscode.window.showTextDocument(vscode.Uri.file(abs), {
+      const editor = await vscode.window.showTextDocument(vscode.Uri.file(abs), {
         preview: true,
         viewColumn: vscode.ViewColumn.One,
       });
+      if (typeof line !== 'number' || line < 1) return;
+      // Clamp to the document: a reference can outlive the edit that shortened the file.
+      const last = editor.document.lineCount - 1;
+      const start = new vscode.Position(Math.min(line - 1, last), 0);
+      const endNo = typeof endLine === 'number' && endLine >= line ? endLine : line;
+      const end = editor.document.lineAt(Math.min(endNo - 1, last)).range.end;
+      const target = new vscode.Range(start, end);
+      editor.revealRange(target, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      // Select the referenced range so a cited span is visible, not just scrolled to.
+      editor.selection = new vscode.Selection(start, endNo === line ? start : end);
     } catch (err) {
       void vscode.window.showWarningMessage(`DSH: cannot open ${rel}: ${String(err)}`);
     }
@@ -359,17 +398,19 @@ export class ChatPanel {
     this.post({
       type: 'history',
       entries: result.entries.map((e) => {
-        if (e.kind === 'user') return { kind: 'user' as const, blocks: parseMarkdown(e.text) };
+        if (e.kind === 'user') return { kind: 'user' as const, blocks: this.render(e.text) };
         if (e.kind === 'assistant') {
-          const reasoning = e.reasoning ? parseMarkdown(e.reasoning) : [];
+          const reasoning = e.reasoning ? this.render(e.reasoning) : [];
           return {
             kind: 'assistant' as const,
-            blocks: parseMarkdown(e.text),
+            blocks: this.render(e.text),
             reasoning,
             preview: previewOf(reasoning),
           };
         }
-        return e;
+        // Restored tool rows are clickable on the same terms as live ones.
+        const clickable = this.clickablePath(e.path);
+        return { ...e, path: undefined, line: undefined, ...(clickable ?? {}) };
       }),
       truncated: result.truncated,
     });
@@ -390,7 +431,7 @@ export class ChatPanel {
         const key = `${role}:${chunk.messageId ?? 'anon'}`;
         const full = (this.streamText.get(key) ?? '') + text;
         this.streamText.set(key, full);
-        const blocks = parseMarkdown(full);
+        const blocks = this.render(full);
         this.post({
           type: 'message',
           role,
@@ -404,14 +445,14 @@ export class ChatPanel {
         const t = u as { toolCallId: string; title?: string; status?: string; rawInput?: Record<string, unknown> };
         const title = t.title ?? 'tool';
         this.toolTitles.set(t.toolCallId, title);
-        const filePath = pathFromInput(t.rawInput);
+        const clickable = this.clickablePath(pathFromInput(t.rawInput));
         this.post({
           type: 'tool',
           id: t.toolCallId,
           title,
           status: t.status ?? 'pending',
           detail: summariseInput(t.rawInput, this.workspaceRoot),
-          ...(filePath ? { path: filePath } : {}),
+          ...(clickable ?? {}),
         });
         return;
       }
@@ -495,7 +536,7 @@ export class ChatPanel {
   async send(text: string): Promise<void> {
     if (typeof text !== 'string' || text.trim() === '') return;
     // Rendered as Markdown too: sendSelection wraps the selection in a code fence.
-    this.post({ type: 'user', blocks: parseMarkdown(text) });
+    this.post({ type: 'user', blocks: this.render(text) });
     this.post({ type: 'state', busy: true, sessionId: this.sessionId, options: [], skills: this.skillViews() });
     ChatPanel.syncBusyContext();
     try {

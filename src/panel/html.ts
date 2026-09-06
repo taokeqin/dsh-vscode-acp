@@ -28,7 +28,7 @@ export type PanelInbound =
   | { type: 'ready' }
   | { type: 'send'; text: string }
   | { type: 'cancel' }
-  | { type: 'openPath'; path: string }
+  | { type: 'openPath'; path: string; line?: number; endLine?: number }
   | { type: 'openExternal'; url: string }
   | { type: 'setOption'; id: string; value: string };
 
@@ -45,7 +45,7 @@ export type PanelOutbound =
    * HTML string built from agent output.
    */
   | { type: 'message'; role: 'assistant' | 'thought'; messageId: string; blocks: Block[]; preview: string }
-  | { type: 'tool'; id: string; title: string; status: string; detail?: string; path?: string }
+  | { type: 'tool'; id: string; title: string; status: string; detail?: string; path?: string; line?: number }
   | { type: 'usage'; used: number; size: number }
   | { type: 'notice'; text: string; tone: 'info' | 'error' }
   | { type: 'turnEnd'; stopReason: string }
@@ -58,7 +58,7 @@ export type PanelOutbound =
 export type HistoryEntryView =
   | { kind: 'user'; blocks: Block[] }
   | { kind: 'assistant'; blocks: Block[]; reasoning: Block[]; preview: string }
-  | { kind: 'tool'; id: string; name: string; detail: string; failed: boolean };
+  | { kind: 'tool'; id: string; name: string; detail: string; failed: boolean; path?: string; line?: number };
 
 const STYLE = `
 :root { color-scheme: light dark; }
@@ -98,6 +98,12 @@ body {
 .msg pre code { background: none; padding: 0; font-size: 0.9em; line-height: 1.45; }
 .msg a { color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: none; }
 .msg a:hover { text-decoration: underline; }
+/* A confirmed file reference: still monospace, but clearly actionable. */
+.msg code.ref {
+  color: var(--vscode-textLink-foreground); cursor: pointer;
+  text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px;
+}
+.msg code.ref:hover { text-decoration-style: solid; }
 .msg.user {
   background: var(--vscode-textBlockQuote-background);
   border-left: 2px solid var(--vscode-focusBorder);
@@ -237,6 +243,16 @@ function buildInline(nodes, into) {
       const el = document.createElement(n.t === 'strong' ? 'strong' : 'em');
       buildInline(n.v, el);
       into.append(el);
+    } else if (n.t === 'file') {
+      // Rendered as code, not a link: it reads as a path and behaves like one.
+      const el = document.createElement('code');
+      el.className = 'ref';
+      el.textContent = String(n.v ?? '');
+      el.title = n.line ? n.path + ':' + n.line : n.path;
+      el.onclick = () => vscode.postMessage({
+        type: 'openPath', path: String(n.path), line: n.line, endLine: n.endLine,
+      });
+      into.append(el);
     } else if (n.t === 'link') {
       const el = document.createElement('a');
       buildInline(n.v, el);
@@ -366,7 +382,7 @@ function upsertTool(m) {
   if (m.path) {
     arg.classList.add('link');
     arg.title = m.path;
-    arg.onclick = () => vscode.postMessage({ type: 'openPath', path: m.path });
+    arg.onclick = () => vscode.postMessage({ type: 'openPath', path: m.path, line: m.line });
   }
   scroll(wasBottom);
 }
@@ -410,6 +426,11 @@ function renderHistory(entries, truncated) {
       const arg = document.createElement('span');
       arg.className = 'arg';
       arg.textContent = String(e.detail ?? '');
+      if (e.path) {
+        arg.classList.add('link');
+        arg.title = String(e.path);
+        arg.onclick = () => vscode.postMessage({ type: 'openPath', path: String(e.path), line: e.line });
+      }
       row.append(dot, name, arg);
       frag.append(row);
     }
