@@ -36,6 +36,17 @@ check('refs inside bold are found', () => {
 });
 check('refs inside list items are found', () =>
   assert.ok(kinds('- `src/a.ts`').includes('file')));
+check('refs inside table cells are found', () => {
+  const [table] = decorate('| file |\n|---|\n| `src/a.ts:7` |');
+  assert.equal(table.t, 'table');
+  const cell = table.rows[0][0];
+  assert.equal(cell[0].t, 'file');
+  assert.equal(cell[0].line, 7);
+});
+check('a table header cell is decorated too', () => {
+  const [table] = decorate('| `src/a.ts` |\n|---|\n| x |');
+  assert.equal(table.head[0][0].t, 'file');
+});
 
 console.log('\n2. left as plain code');
 check('a path that does not exist', () => assert.deepEqual(kinds('`src/missing.ts`'), ['code']));

@@ -67,6 +67,13 @@ export function decorateFileRefs(blocks: Block[], deps: RefDeps): Block[] {
     if (b.t === 'ol') return { ...b, items: b.items.map((i) => decorateInline(i, deps)) };
     if (b.t === 'h') return { ...b, v: decorateInline(b.v, deps) };
     if (b.t === 'p' || b.t === 'quote') return { t: b.t, v: decorateInline(b.v, deps) };
+    if (b.t === 'table') {
+      return {
+        ...b,
+        head: b.head.map((c) => decorateInline(c, deps)),
+        rows: b.rows.map((r) => r.map((c) => decorateInline(c, deps))),
+      };
+    }
     return b;
   });
 }

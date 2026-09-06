@@ -40,6 +40,57 @@ await check('blockquote and rule', () =>
 await check('paragraphs split on blank lines', () =>
   assert.equal(kinds(parseMarkdown('one\n\ntwo')), 'p,p'));
 
+console.log('\n1b. tables');
+const T = (md) => parseMarkdown(md)[0];
+const cells = (row) => row.map(inlineToText);
+await check('header, delimiter and body', () => {
+  const t = T('| a | b |\n|---|---|\n| 1 | 2 |');
+  assert.equal(t.t, 'table');
+  assert.deepEqual(cells(t.head), ['a', 'b']);
+  assert.deepEqual(t.rows.map(cells), [['1', '2']]);
+});
+await check('alignment from the delimiter row', () =>
+  assert.deepEqual(T('| a | b | c |\n|:--|:-:|--:|\n| 1 | 2 | 3 |').align,
+    ['left', 'center', 'right']));
+await check('unspecified alignment is null', () =>
+  assert.deepEqual(T('|a|\n|---|\n|1|').align, [null]));
+await check('outer pipes are optional', () => {
+  const t = T('a | b\n--- | ---\n1 | 2');
+  assert.deepEqual(cells(t.head), ['a', 'b']);
+});
+await check('an escaped pipe stays inside its cell', () => {
+  const t = T('| a |\n|---|\n| x \\| y |');
+  assert.deepEqual(t.rows.map(cells), [['x | y']]);
+});
+await check('short rows are padded to the header width', () => {
+  const t = T('| a | b | c |\n|---|---|---|\n| 1 |');
+  assert.equal(t.rows[0].length, 3);
+});
+await check('extra cells are dropped', () => {
+  const t = T('| a |\n|---|\n| 1 | 2 | 3 |');
+  assert.equal(t.rows[0].length, 1);
+});
+await check('inline markup inside cells is parsed', () => {
+  const t = T('| a |\n|---|\n| **b** `c` |');
+  assert.deepEqual(t.rows[0][0].map((n) => n.t), ['strong', 'text', 'code']);
+});
+await check('a preceding paragraph is not swallowed', () => {
+  const b = parseMarkdown('intro text\n\n| a |\n|---|\n| 1 |');
+  assert.deepEqual(b.map((x) => x.t), ['p', 'table']);
+});
+await check('a table right after a paragraph with no blank line still splits', () => {
+  const b = parseMarkdown('intro text\n| a |\n|---|\n| 1 |');
+  assert.deepEqual(b.map((x) => x.t), ['p', 'table']);
+});
+await check('a following paragraph is separate', () => {
+  const b = parseMarkdown('| a |\n|---|\n| 1 |\n\nafter');
+  assert.deepEqual(b.map((x) => x.t), ['table', 'p']);
+});
+await check('pipes without a delimiter row stay prose', () =>
+  assert.equal(parseMarkdown('a | b | c')[0].t, 'p'));
+await check('a pipe table inside a fence is left as code', () =>
+  assert.equal(parseMarkdown('```\n| a |\n|---|\n```')[0].t, 'code'));
+
 console.log('\n2. inline');
 await check('bold', () => {
   const n = parseInline('a **b** c');
@@ -107,7 +158,12 @@ await check('newlines collapse for a one-line row', () =>
 console.log('\n5. the webview script parses');
 // It ships as a string inside the HTML, so tsc never sees it; a syntax error would
 // only surface as a blank panel at runtime.
-await check('inline script is syntactically valid JS', () => {
+await check('the panel renders tables in a scrollable box', () => {
+  const html = chatHtml('n');
+  assert.match(html, /createElement\('table'\)/);
+  assert.match(html, /tablewrap/);
+});
+check('inline script is syntactically valid JS', () => {
   const html = chatHtml('test-nonce');
   const scripts = [...html.matchAll(/<script nonce="test-nonce">([\s\S]*?)<\/script>/g)].map((m) => m[1]);
   assert.ok(scripts.length > 0, 'no inline script found');

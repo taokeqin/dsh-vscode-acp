@@ -31,7 +31,63 @@ export type Block =
   | { t: 'ul'; items: Inline[][] }
   | { t: 'ol'; items: Inline[][]; start: number }
   | { t: 'quote'; v: Inline[] }
-  | { t: 'hr' };
+  | { t: 'hr' }
+  | {
+      t: 'table';
+      head: Inline[][];
+      rows: Inline[][][];
+      /** Per-column alignment from the delimiter row; null means unspecified. */
+      align: (Align | null)[];
+    };
+
+export type Align = 'left' | 'center' | 'right';
+
+/**
+ * Splits a table row into cells.
+ *
+ * GFM makes the outer pipes optional, and `\|` escapes a literal pipe inside a
+ * cell — without handling that, a cell containing a pipe silently becomes two.
+ */
+function splitRow(line: string): string[] {
+  const cells: string[] = [];
+  let cur = '';
+  let i = 0;
+  const body = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  while (i < body.length) {
+    const ch = body[i];
+    if (ch === '\\' && body[i + 1] === '|') {
+      cur += '|';
+      i += 2;
+      continue;
+    }
+    if (ch === '|') {
+      cells.push(cur.trim());
+      cur = '';
+      i++;
+      continue;
+    }
+    cur += ch;
+    i++;
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+/**
+ * Reads the delimiter row that makes a table a table: `|---|:--:|---:|`.
+ * Returns per-column alignment, or null when the line is not a delimiter row.
+ */
+function parseDelimiter(line: string): (Align | null)[] | null {
+  const cells = splitRow(line);
+  if (cells.length === 0) return null;
+  const align: (Align | null)[] = [];
+  for (const cell of cells) {
+    const m = /^(:?)-{1,}(:?)$/.exec(cell.replace(/\s+/g, ''));
+    if (!m) return null;
+    align.push(m[1] && m[2] ? 'center' : m[2] ? 'right' : m[1] ? 'left' : null);
+  }
+  return align;
+}
 
 /** Only these schemes become links; anything else stays literal text. */
 const SAFE_LINK = /^https?:\/\//i;
@@ -146,6 +202,27 @@ export function parseMarkdown(src: string): Block[] {
       continue;
     }
 
+    // Table: a header row followed by a delimiter row. Checked before the paragraph
+    // branch, which would otherwise swallow it as pipe-laden prose.
+    if (line.includes('|') && i + 1 < lines.length) {
+      const align = parseDelimiter(lines[i + 1]);
+      if (align !== null) {
+        const head = splitRow(line).map((c) => parseInline(c));
+        i += 2;
+        const rows: Inline[][][] = [];
+        while (i < lines.length && lines[i].trim() !== '' && lines[i].includes('|')) {
+          const cells = splitRow(lines[i++]);
+          // Normalise to the header width: GFM drops extra cells and pads short rows,
+          // and an uneven row would otherwise break the column grid.
+          const row: Inline[][] = [];
+          for (let c = 0; c < head.length; c++) row.push(parseInline(cells[c] ?? ''));
+          rows.push(row);
+        }
+        blocks.push({ t: 'table', head, rows, align });
+        continue;
+      }
+    }
+
     // Paragraph: run to the next blank line or block starter, joined with newlines
     // so soft wrapping is preserved.
     const starts = (l: string): boolean =>
@@ -154,8 +231,16 @@ export function parseMarkdown(src: string): Block[] {
       /^#{1,6}\s/.test(l) ||
       /^\s*>/.test(l) ||
       /^\s*[-*+]\s+/.test(l) ||
-      /^\s*\d+[.)]\s+/.test(l);
-    const para = take((l) => !starts(l));
+      /^\s*\d+[.)]\s+/.test(l) ||
+      parseDelimiter(l) !== null; // a delimiter row means the line above was a header
+    const para: string[] = [];
+    while (i < lines.length && !starts(lines[i])) {
+      // A header row is only a header if a delimiter row follows; stop before it so
+      // the table branch gets both lines.
+      if (lines[i].includes('|') && i + 1 < lines.length && parseDelimiter(lines[i + 1]) !== null) break;
+      para.push(lines[i++]);
+    }
+    if (para.length === 0) { i++; continue; }
     blocks.push({ t: 'p', v: parseInline(para.join('\n')) });
   }
 

@@ -149,6 +149,17 @@ body {
   border-left: 2px solid var(--vscode-panel-border); opacity: 0.85; white-space: pre-wrap;
 }
 .msg hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 12px 0; }
+/* Tables scroll inside their own box: the panel is narrow, and letting a wide table
+   widen the transcript would make every message scroll sideways. */
+.msg .tablewrap { overflow-x: auto; margin: 0 0 8px; }
+.msg table { border-collapse: collapse; font-size: 0.95em; }
+.msg th, .msg td {
+  border: 1px solid var(--vscode-panel-border);
+  padding: 4px 8px; text-align: left; vertical-align: top; white-space: pre-wrap;
+}
+.msg th { background: var(--vscode-textBlockQuote-background); font-weight: 600; }
+.msg td.c, .msg th.c { text-align: center; }
+.msg td.r, .msg th.r { text-align: right; }
 .msg code {
   font-family: var(--vscode-editor-font-family, monospace); font-size: 0.92em;
   background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.18));
@@ -443,6 +454,35 @@ function buildBlocks(blocks, into) {
       into.append(el);
     } else if (b.t === 'hr') {
       into.append(document.createElement('hr'));
+    } else if (b.t === 'table') {
+      const wrap = document.createElement('div');
+      wrap.className = 'tablewrap';
+      const table = document.createElement('table');
+      const align = Array.isArray(b.align) ? b.align : [];
+      const cls = (i) => (align[i] === 'center' ? ' c' : align[i] === 'right' ? ' r' : '');
+      const thead = document.createElement('thead');
+      const hr = document.createElement('tr');
+      (b.head || []).forEach((cell, i) => {
+        const th = document.createElement('th');
+        if (cls(i)) th.className = cls(i).trim();
+        buildInline(cell, th);
+        hr.append(th);
+      });
+      thead.append(hr);
+      const tbody = document.createElement('tbody');
+      for (const row of b.rows || []) {
+        const tr = document.createElement('tr');
+        (row || []).forEach((cell, i) => {
+          const td = document.createElement('td');
+          if (cls(i)) td.className = cls(i).trim();
+          buildInline(cell, td);
+          tr.append(td);
+        });
+        tbody.append(tr);
+      }
+      table.append(thead, tbody);
+      wrap.append(table);
+      into.append(wrap);
     }
   }
 }
