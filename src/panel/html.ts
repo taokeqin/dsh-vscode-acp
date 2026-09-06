@@ -208,6 +208,37 @@ details.thought .body { margin-top: 6px; }
 #input:focus { outline: 1px solid var(--vscode-focusBorder); }
 #bar { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 0.85em; }
 #opts { display: flex; gap: 4px; flex: none; align-items: center; }
+/* Self-drawn combobox rather than a native select element, which renders with the
+   OS look inside a webview and sits oddly next to VS Code's flat dropdowns.
+   Claude Code's webview reaches the same conclusion: role="combobox" throughout. */
+.combo { position: relative; }
+.combo > button {
+  display: flex; align-items: center; gap: 4px; max-width: 150px;
+  padding: 2px 6px; font-family: inherit; font-size: 0.95em; line-height: 1.4;
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  background: var(--vscode-dropdown-background, transparent);
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+  border-radius: 3px; cursor: pointer;
+}
+.combo > button:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
+.combo > button:disabled { opacity: 0.5; cursor: default; }
+.combo > button .val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo > button .caret { flex: none; font-size: 0.7em; opacity: 0.7; }
+.combo-menu {
+  display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 4px;
+  min-width: 180px; max-width: 320px; max-height: 260px; overflow-y: auto; z-index: 30;
+  background: var(--vscode-editorSuggestWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-editorSuggestWidget-border, var(--vscode-panel-border));
+  border-radius: 4px; box-shadow: 0 3px 12px rgba(0,0,0,.35);
+}
+.combo-menu.on { display: block; }
+.combo-menu .opt {
+  display: flex; gap: 6px; align-items: baseline; padding: 5px 9px;
+  cursor: pointer; white-space: nowrap;
+}
+.combo-menu .opt.sel { background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-activeSelectionBackground)); }
+.combo-menu .opt .tick { flex: none; width: 12px; opacity: 0.9; }
+.combo-menu .opt .txt { overflow: hidden; text-overflow: ellipsis; }
 #status { flex: 1; display: flex; justify-content: flex-end; align-items: center; }
 /* Context usage: a ring rather than a number, since the exact token count is
    rarely what you want mid-conversation — the hover title carries it. */
@@ -535,48 +566,151 @@ function renderStatus() {
   ring.append(t);
 }
 
+/** The combobox menu currently open, so only one is ever expanded. */
+let openCombo = null;
+
+function closeCombo() {
+  if (!openCombo) return;
+  openCombo.menu.classList.remove('on');
+  openCombo.button.setAttribute('aria-expanded', 'false');
+  openCombo = null;
+}
+
 /**
- * Renders the agent's advertised settings as dropdowns in the composer.
+ * Builds one combobox.
  *
- * Rebuilt only when the option set actually changes, so an open dropdown is not
- * torn out from under the pointer by an unrelated state push.
+ * Keyboard behaviour mirrors a native select closely enough to be unsurprising:
+ * arrows move, Enter commits, Escape cancels and returns focus to the button.
+ */
+function buildCombo(option) {
+  const wrap = document.createElement('span');
+  wrap.className = 'combo';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.setAttribute('role', 'combobox');
+  button.setAttribute('aria-expanded', 'false');
+  button.title = String(option.label ?? option.id);
+  const val = document.createElement('span');
+  val.className = 'val';
+  const caret = document.createElement('span');
+  caret.className = 'caret';
+  caret.textContent = '\u25BE';
+  button.append(val, caret);
+
+  const menu = document.createElement('div');
+  menu.className = 'combo-menu';
+  menu.setAttribute('role', 'listbox');
+
+  const choices = Array.isArray(option.choices) ? option.choices : [];
+  const current = () => choices.findIndex((c) => c.value === option.current);
+  let cursor = Math.max(0, current());
+
+  const label = choices.find((c) => c.value === option.current);
+  val.textContent = label ? label.label : String(option.current ?? '');
+
+  const paint = () => {
+    for (const [i, el] of [...menu.children].entries()) el.classList.toggle('sel', i === cursor);
+    const sel = menu.children[cursor];
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  };
+
+  const commit = (i) => {
+    const choice = choices[i];
+    closeCombo();
+    button.focus();
+    if (!choice || choice.value === option.current) return;
+    vscode.postMessage({ type: 'setOption', id: option.id, value: choice.value });
+  };
+
+  choices.forEach((c, i) => {
+    const opt = document.createElement('div');
+    opt.className = 'opt';
+    opt.setAttribute('role', 'option');
+    const tick = document.createElement('span');
+    tick.className = 'tick';
+    tick.textContent = c.value === option.current ? '\u2713' : '';
+    const txt = document.createElement('span');
+    txt.className = 'txt';
+    txt.textContent = c.label;
+    opt.append(tick, txt);
+    opt.onmouseenter = () => { cursor = i; paint(); };
+    opt.onmousedown = (e) => { e.preventDefault(); commit(i); };
+    menu.append(opt);
+  });
+
+  const open = () => {
+    if (button.disabled || choices.length === 0) return;
+    closeCombo();
+    cursor = Math.max(0, current());
+    menu.classList.add('on');
+    button.setAttribute('aria-expanded', 'true');
+    openCombo = { menu, button };
+    paint();
+  };
+
+  button.onclick = () => (openCombo && openCombo.menu === menu ? closeCombo() : open());
+  button.onkeydown = (e) => {
+    const isOpen = openCombo !== null && openCombo.menu === menu;
+    if (!isOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        open();
+      }
+      return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      cursor = (cursor + (e.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length;
+      paint();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      commit(cursor);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeCombo();
+    }
+  };
+
+  wrap.append(button, menu);
+  return { wrap, button };
+}
+
+/**
+ * Renders the agent's advertised settings.
+ *
+ * Rebuilt only when the option set actually changes, so an open menu is not torn
+ * out from under the pointer by an unrelated state push.
  */
 let optionsKey = '';
 function renderOptions(list) {
   const items = Array.isArray(list) ? list : [];
   const key = JSON.stringify(items);
   if (key === optionsKey) {
-    // Same options: just reflect the current values and busy state.
-    for (const sel of opts.querySelectorAll('select')) {
-      const item = items.find((o) => o.id === sel.dataset.id);
-      if (item) sel.value = item.current;
-      sel.disabled = busy;
-    }
+    for (const b of opts.querySelectorAll('.combo > button')) b.disabled = busy;
     return;
   }
   optionsKey = key;
+  closeCombo();
   opts.replaceChildren();
   for (const o of items) {
     if (!o || typeof o.id !== 'string') continue;
-    const sel = document.createElement('select');
-    sel.dataset.id = o.id;
-    sel.title = String(o.label ?? o.id);
-    sel.disabled = busy;
-    for (const c of o.choices || []) {
-      const opt = document.createElement('option');
-      opt.value = String(c.value);
-      opt.textContent = String(c.label);
-      sel.append(opt);
-    }
-    sel.value = String(o.current ?? '');
-    sel.onchange = () => vscode.postMessage({ type: 'setOption', id: o.id, value: sel.value });
-    opts.append(sel);
+    const { wrap, button } = buildCombo(o);
+    button.disabled = busy;
+    opts.append(wrap);
   }
 }
 
+// A click anywhere else dismisses an open menu, as a native dropdown would.
+document.addEventListener('mousedown', (e) => {
+  if (openCombo && !openCombo.menu.contains(e.target) && e.target !== openCombo.button
+      && !openCombo.button.contains(e.target)) closeCombo();
+}, true);
+
 function setBusy(v) {
   busy = v;
-  for (const sel of opts.querySelectorAll('select')) sel.disabled = v;
+  for (const b of opts.querySelectorAll('.combo > button')) b.disabled = v;
+  if (v) closeCombo();
   sendBtn.disabled = v;
   stopBtn.hidden = !v;
   input.placeholder = v ? 'Agent is working…' : 'Ask the agent  (Enter to send, Shift+Enter for a newline)';

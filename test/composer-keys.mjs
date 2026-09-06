@@ -43,5 +43,33 @@ check('composition listeners are wired', () => {
 check('the toolbar Skills button is gone — slash is the entry point', () =>
   assert.ok(!/id="skills"/.test(html)));
 
+console.log('\n5. the composer draws its own controls');
+// A native <select> renders with the OS look inside a webview and sits oddly next to
+// VS Code's flat dropdowns. Claude Code's webview reaches the same conclusion:
+// role="combobox", no <select> in its markup.
+check('no native select element is ever created', () => {
+  // Matches real usage only: an element creation, or a closing tag. A bare
+  // "<select>" also appears in a comment explaining why it is avoided — the same
+  // trap that made the innerHTML guard fire on its own rationale.
+  const hit = /createElement\(\s*['"]select['"]|<\/select>/.exec(html);
+  assert.equal(hit === null, true, hit ? `found ${hit[0]} at ${hit.index}` : '');
+});
+check('the dropdown announces itself as a combobox', () =>
+  assert.match(html, /'combobox'/));
+check('aria-expanded is maintained', () => assert.match(html, /aria-expanded/));
+check('options are exposed as a listbox', () => {
+  assert.match(html, /'listbox'/);
+  assert.match(html, /'option'/);
+});
+check('keyboard navigation is wired', () => {
+  for (const key of ['ArrowDown', 'ArrowUp', 'Enter', 'Escape']) {
+    assert.ok(html.includes(key), `${key} not handled`);
+  }
+});
+check('an outside click dismisses the menu', () => assert.match(html, /closeCombo/));
+check('only one menu can be open', () => assert.match(html, /openCombo/));
+check('controls disable while a turn runs', () =>
+  assert.match(html, /\.combo > button['"]\)\)\s*b\.disabled|b\.disabled = /));
+
 console.log(failures === 0 ? '\nALL PASS\n' : `\n${failures} FAILED\n`);
 process.exit(failures === 0 ? 0 : 1);
