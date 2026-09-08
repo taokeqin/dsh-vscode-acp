@@ -3,7 +3,7 @@
   "displayName": "DSH Agent",
   "description": "Chat with the DeepSeek Harness (dsh) coding agent inside VS Code, over ACP. Unofficial — not affiliated with DeepSeek.",
   "version": "0.2.0",
-  "publisher": "set-your-publisher-id",
+  "publisher": "taotingtushuo",
   "license": "MIT",
   "icon": "media/icon.png",
   "engines": {
