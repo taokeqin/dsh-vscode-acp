@@ -10,20 +10,11 @@ import { listSessionIdsOnDisk, type SessionMeta } from '../history/store';
 import { pickPreferredSession } from '../sessionOrder';
 import type { SessionCatalog } from '../sessionCatalog';
 import { dshHome } from '../dshHome';
-import { ChatPanel } from './chatPanel';
+import { ChatPanel, NEW_SESSION_TITLE } from './chatPanel';
 import { sessionsHtml, type SessionsInbound, type SessionsOutbound } from './sessionsHtml';
 
-/** Compact relative time ("3m ago", "2d ago"). */
-export function relativeTime(ms: number | null): string {
-  if (ms === null) return '';
-  const secs = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (secs < 60) return 'just now';
-  const mins = Math.round(secs / 60);
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
-}
+/** Fold rapid panel-open/close/focus/turn-end bursts into one list rebuild. */
+const CHANGE_DEBOUNCE_MS = 250;
 
 export class SessionsViewProvider implements vscode.WebviewViewProvider {
   /**
@@ -34,6 +25,7 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
    * once and both stay in sync from a single refresh.
    */
   private readonly views = new Set<vscode.WebviewView>();
+  private refreshTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly connection: AcpConnection,
@@ -42,8 +34,19 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
     /** Shared with the panel's inline list, so one metadata cache serves both. */
     private readonly catalog: SessionCatalog,
   ) {
-    // Opening, closing or switching tabs changes what this list should show.
-    ChatPanel.onDidChangeOpen(() => void this.refresh());
+    // Opening, closing or switching tabs changes what this list should show. Such
+    // changes arrive in bursts (a turn end, focus changes across tabs), and each
+    // rebuild scans disk and may call session/list, so coalesce them. User-initiated
+    // refreshes (new/open/refresh button) still call refresh() directly.
+    ChatPanel.onDidChangeOpen(() => this.scheduleRefresh());
+  }
+
+  private scheduleRefresh(): void {
+    if (this.refreshTimer !== null) return;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      void this.refresh();
+    }, CHANGE_DEBOUNCE_MS);
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -58,7 +61,15 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
 
   /** Broadcasts to every mounted view. */
   private post(msg: SessionsOutbound): void {
-    for (const view of this.views) void view.webview.postMessage(msg);
+    for (const view of this.views) {
+      try {
+        void view.webview.postMessage(msg);
+      } catch {
+        // The view can be disposed (sidebar hidden/closed) between our guard and
+        // the post, and postMessage then throws "Webview is disposed". Its own
+        // onDidDispose removes it from the set; nothing left to deliver to.
+      }
+    }
   }
 
   private async onMessage(msg: SessionsInbound): Promise<void> {
@@ -152,7 +163,7 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
   async newSession(): Promise<void> {
     try {
       const id = await this.connection.newSession();
-      ChatPanel.create(id, 'DSH · new session', this.connection, this.workspaceRoot, this.log);
+      ChatPanel.create(id, NEW_SESSION_TITLE, this.connection, this.workspaceRoot, this.log);
       await this.refresh();
     } catch (err) {
       this.log(`[sessions] create failed: ${String(err)}`);
@@ -182,7 +193,9 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
     }
     const panel = ChatPanel.create(
       sessionId,
-      `DSH · ${(meta.title ?? sessionId.slice(0, 8)).slice(0, 40)}`,
+      // A session holding no conversation gets the same placeholder as one created
+      // with "+", so its tab is named from the first message sent (see ChatPanel.send).
+      meta.title ? `DSH · ${meta.title.slice(0, 40)}` : NEW_SESSION_TITLE,
       this.connection,
       this.workspaceRoot,
       this.log,

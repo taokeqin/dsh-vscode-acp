@@ -84,12 +84,14 @@ function isFile(p: string, deps: LocateDeps): boolean {
 /**
  * Candidate names for the executable.
  *
- * On Windows an npm-installed CLI is a `.cmd` shim, so a bare name finds nothing.
- * Order matters only in that the first hit wins.
+ * On Windows an npm-installed CLI ships a `.cmd` shim (plus a `.ps1` and a shell
+ * script), so a bare name finds nothing. A real `.exe` is preferred when present:
+ * unlike `.cmd`/`.bat` it needs no cmd.exe layer to run. Order matters only in that
+ * the first hit wins.
  */
 function candidateNames(name: string, deps: LocateDeps): string[] {
   if (deps.platform !== 'win32') return [name];
-  return [`${name}.cmd`, `${name}.exe`, `${name}.bat`, name];
+  return [`${name}.exe`, `${name}.cmd`, `${name}.bat`, name];
 }
 
 /**

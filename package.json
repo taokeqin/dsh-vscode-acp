@@ -213,7 +213,7 @@
     "watch": "tsc -w -p ./",
     "typecheck": "tsc --noEmit -p ./",
     "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies -o dsh-agent.vsix",
-    "test": "npm run compile && node test/menus.mjs && node test/locate.mjs && node test/markdown.mjs && node test/file-ref.mjs && node test/file-refs-decorate.mjs && node test/skills.mjs && node test/slash-menu.mjs && node test/composer-keys.mjs && node test/session-order.mjs && node test/panel-column.mjs && node test/gui-launch.mjs && node test/smoke.mjs && node test/history.mjs",
+    "test": "npm run compile && node test/menus.mjs && node test/locate.mjs && node test/markdown.mjs && node test/file-ref.mjs && node test/file-refs-decorate.mjs && node test/skills.mjs && node test/slash-menu.mjs && node test/composer-keys.mjs && node test/session-order.mjs && node test/panel-column.mjs && node test/acp-client.mjs && node test/gui-launch.mjs && node test/smoke.mjs && node test/history.mjs",
     "clean": "node -e \"require('node:fs').rmSync('out',{recursive:true,force:true})\"",
     "vscode:prepublish": "npm run compile"
   },

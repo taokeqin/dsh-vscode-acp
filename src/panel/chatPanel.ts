@@ -9,7 +9,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { AcpConnection } from '../acp/connection';
 import type { ConfigOption, SessionUpdate, ToolCallContent } from '../acp/types';
-import { loadTranscript } from '../history/store';
+import { loadTranscript, type SessionMeta } from '../history/store';
 import { inlineToText, parseMarkdown, type Block } from '../markdown';
 import { loadSkills, type Skill } from '../skills';
 import type { SessionCatalog } from '../sessionCatalog';
@@ -21,6 +21,32 @@ import { chatHtml, type ConfigOptionView, type PanelInbound, type PanelOutbound,
 
 /** Tool arguments that name a file, in the order we prefer them. */
 const PATH_KEYS = ['file_path', 'path', 'filePath', 'notebook_path'];
+
+/** How long incoming stream chunks are held before one coalesced render+post. */
+const STREAM_FLUSH_MS = 40;
+/** Max length of the flattened one-line summary of a tool result. */
+const TOOL_DETAIL_MAX = 120;
+/** How long a file-existence answer is trusted before re-stat'ing (files can be
+ * created mid-turn by the agent, so negatives must not be cached forever). */
+const EXISTS_TTL_MS = 1000;
+/** Upper bound on cached existence answers, evicting oldest first. */
+const EXISTS_CACHE_MAX = 512;
+
+/**
+ * Posts to a webview while tolerating disposal.
+ *
+ * VS Code can dispose a panel (tab closed, window reload, restart) between a
+ * guard check and the post; postMessage on a disposed webview then throws
+ * "Webview is disposed". That is not a bug — the user simply closed the tab —
+ * so the throw is swallowed. Every host→webview post goes through here.
+ */
+function postSafe(webview: vscode.Webview, msg: PanelOutbound): void {
+  try {
+    void webview.postMessage(msg);
+  } catch {
+    // Disposed between the guard and the post: nothing left to deliver to.
+  }
+}
 
 function pathFromInput(input: Record<string, unknown> | undefined): string | undefined {
   if (!input) return undefined;
@@ -50,13 +76,28 @@ function previewOf(blocks: Block[]): string {
   return '';
 }
 
-/** Flattens tool result content, which nests one level: { type, content: { text } }. */
+/**
+ * Flattens tool result content into a short one-line summary.
+ *
+ * Content nests one level: { type, content: { text } }, and a tool result can be
+ * huge (a `read` of a large file). Only the first ~120 characters are wanted, so
+ * blocks are walked word-wise and the walk stops the moment the budget is spent —
+ * never joining or whitespace-collapsing the whole payload first.
+ */
 function flattenToolContent(content: ToolCallContent[] | undefined): string {
   if (!Array.isArray(content)) return '';
-  return content
-    .map((c) => (c.content && typeof c.content.text === 'string' ? c.content.text : ''))
-    .filter(Boolean)
-    .join('\n');
+  let out = '';
+  for (const c of content) {
+    const t = c.content && typeof c.content.text === 'string' ? c.content.text : '';
+    if (t === '') continue;
+    for (const word of t.split(/\s+/)) {
+      if (word === '') continue;
+      if (out === '') out = word;
+      else if (out.length + 1 + word.length <= TOOL_DETAIL_MAX) out += ' ' + word;
+      else return out; // Budget spent: the rest of this payload is irrelevant.
+    }
+  }
+  return out;
 }
 
 /**
@@ -93,6 +134,9 @@ interface PanelState {
 
 export const CHAT_VIEW_TYPE = 'dshAgent.chatPanel';
 
+/** Tab label used while a fresh session has no content yet; replaced on first message. */
+export const NEW_SESSION_TITLE = 'DSH · new session';
+
 export class ChatPanel {
   /** Open panels by sessionId — the source of truth for "is this session open". */
   private static readonly open = new Map<string, ChatPanel>();
@@ -119,12 +163,25 @@ export class ChatPanel {
    * Accumulated text per streaming message id.
    *
    * Chunks are deltas, but Markdown only parses correctly as a whole — a half-received
-   * fence or bold run is not yet valid. So the full text is kept, reparsed on each
-   * chunk, and the tree replaces the rendered node. Messages are small enough that
-   * reparsing costs nothing, and it makes partial syntax correct itself as it lands.
+   * fence or bold run is not yet valid. So the full text is kept; parsing and posting
+   * are coalesced: chunks arriving within a few milliseconds mark the message dirty
+   * and one render cycle paints the latest state, instead of re-parsing and re-posting
+   * the whole message once per chunk (which is O(n²) over a long stream).
    */
   private readonly streamText = new Map<string, string>();
+  /** Keys whose accumulated text changed and awaits the next coalesced render. */
+  private readonly streamDirty = new Map<string, { role: 'assistant' | 'thought'; messageId: string }>();
+  private streamTimer: NodeJS.Timeout | null = null;
   private disposed = false;
+  /**
+   * Whether the webview page has signalled 'ready'. VS Code drops postMessage calls
+   * made before the page has loaded, so outbound messages are buffered until then —
+   * a restored history, an early notice, or the first stream chunks would otherwise
+   * vanish silently.
+   */
+  private ready = false;
+  /** Outbound messages produced while the page was still loading. */
+  private readonly pendingOutbound: PanelOutbound[] = [];
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
@@ -143,6 +200,10 @@ export class ChatPanel {
       panel.onDidChangeViewState(() => {
         ChatPanel.syncBusyContext();
         ChatPanel.changeEmitter.fire();
+        // Focusing the tab is a cheap moment to re-check the log title: a title
+        // dsh wrote after the last turn (or a flush that landed late) shows up
+        // here even if the turn-end refresh found nothing yet.
+        if (panel.active) void this.refreshTitle();
       }),
       panel.onDidDispose(() => void this.dispose()),
     );
@@ -181,13 +242,50 @@ export class ChatPanel {
 
   /** Brings this tab to the front. */
   reveal(column?: vscode.ViewColumn): void {
-    this.panel.reveal(column);
+    if (this.disposed) return;
+    try {
+      this.panel.reveal(column);
+    } catch {
+      // Tab closed between the lookup and the reveal; nothing to bring forward.
+    }
   }
 
-  /** Sets the tab label. Titles arrive late, so this is called again after turn one. */
+  /** Sets the tab label and pushes it into the panel header. */
   setTitle(title: string): void {
-    this.panel.title = title;
+    if (this.disposed) return;
+    try {
+      this.panel.title = title;
+    } catch {
+      // The panel can be disposed between the guard and the assignment (an async
+      // refreshTitle resolving after the tab was closed); a title is cosmetic, so
+      // give up quietly rather than surface "Webview is disposed".
+      return;
+    }
     this.pushState();
+  }
+
+  /**
+   * Re-titles the tab from the session log.
+   *
+   * dsh derives a session's title from its first user message and writes it to the
+   * log, so a tab created before any message ("DSH · new session") can only be
+   * named once a turn has run. Called after every finished turn and after a
+   * restore; a no-op until the log actually carries a title.
+   */
+  private async refreshTitle(): Promise<void> {
+    const catalog = ChatPanel.catalog;
+    if (!catalog) return;
+    let meta: SessionMeta;
+    try {
+      meta = await catalog.metaFor(this.sessionId);
+    } catch {
+      return;
+    }
+    const raw = meta.title;
+    if (typeof raw !== 'string' || raw === '') return;
+    const oneLine = raw.replace(/\s+/g, ' ').trim();
+    if (oneLine === '') return;
+    this.setTitle(`DSH · ${oneLine.slice(0, 40)}`);
   }
 
   /** Where the FIRST session tab opens, from dshAgent.panelColumn. */
@@ -286,28 +384,100 @@ export class ChatPanel {
       log(`[panel] could not resume ${sessionId} on restore: ${String(err)}`);
       panel.webview.options = { enableScripts: true };
       panel.webview.html = chatHtml(randomBytes(16).toString('base64'));
-      void panel.webview.postMessage({
+      // The page has not loaded yet, so a postMessage now would be dropped. Wait
+      // for the page's own 'ready' signal and hand the error to the user then.
+      const notice = {
         type: 'notice',
         text: `This session could not be resumed: ${String(err)}`,
         tone: 'error',
-      } satisfies PanelOutbound);
+      } satisfies PanelOutbound;
+      const sub = panel.webview.onDidReceiveMessage((msg: PanelInbound) => {
+        if (msg?.type !== 'ready') return;
+        sub.dispose();
+        postSafe(panel.webview, notice);
+      });
+      panel.onDidDispose(() => sub.dispose());
       return;
     }
     const restored = new ChatPanel(panel, sessionId, connection, workspaceRoot, log);
     void restored.replayHistory();
+    // The reloaded tab may carry a generic title; name it from the log if it can.
+    void restored.refreshTitle();
   }
 
   private post(msg: PanelOutbound): void {
     if (this.disposed) return;
-    void this.panel.webview.postMessage(msg);
+    if (!this.ready) {
+      this.pendingOutbound.push(msg);
+      return;
+    }
+    postSafe(this.panel.webview, msg);
+  }
+
+  /** Queues one coalesced render cycle; repeated calls within the window collapse. */
+  private scheduleStreamFlush(): void {
+    if (this.streamTimer !== null) return;
+    this.streamTimer = setTimeout(() => {
+      this.streamTimer = null;
+      this.flushStream();
+    }, STREAM_FLUSH_MS);
+  }
+
+  /** Renders and posts the latest accumulated text of every dirty message. */
+  private flushStream(): void {
+    if (this.streamTimer !== null) {
+      clearTimeout(this.streamTimer);
+      this.streamTimer = null;
+    }
+    const dirty = [...this.streamDirty];
+    this.streamDirty.clear();
+    for (const [key, { role, messageId }] of dirty) {
+      const full = this.streamText.get(key);
+      if (full === undefined) continue;
+      const blocks = this.render(full);
+      this.post({
+        type: 'message',
+        role,
+        messageId,
+        blocks,
+        preview: role === 'thought' ? previewOf(blocks) : '',
+      });
+    }
+  }
+
+  /** Drops any pending coalesced render (turn ended / panel gone). */
+  private cancelStreamFlush(): void {
+    if (this.streamTimer !== null) {
+      clearTimeout(this.streamTimer);
+      this.streamTimer = null;
+    }
+    this.streamDirty.clear();
   }
 
   /**
-   * Parses Markdown and decorates the file references in it.
+   * Existence check with a short TTL.
    *
-   * Every rendered message goes through here so a path is clickable wherever it
-   * appears — a streaming answer, a restored transcript, or the user's own message.
+   * Decoration stats every file reference, and during a streaming turn the same
+   * references are re-rendered many times a second; syscalls for them are wasted.
+   * Files can still appear mid-turn (the agent writes then cites), so answers are
+   * trusted for only a second and the cache is size-capped.
    */
+  private readonly existsCache = new Map<string, { hit: boolean; at: number }>();
+
+  private fileExists(p: string): boolean {
+    const now = Date.now();
+    const hit = this.existsCache.get(p);
+    if (hit !== undefined && now - hit.at < EXISTS_TTL_MS) return hit.hit;
+    if (this.existsCache.size >= EXISTS_CACHE_MAX) {
+      // Evict the oldest entry (Map iteration order is insertion order).
+      const oldest = this.existsCache.keys().next().value;
+      if (oldest !== undefined) this.existsCache.delete(oldest);
+    }
+    const v = existsSync(p);
+    this.existsCache.set(p, { hit: v, at: now });
+    return v;
+  }
+
   /**
    * A path is offered as clickable only when it resolves inside the workspace and
    * exists, so no row or span is a link that refuses on click.
@@ -316,7 +486,7 @@ export class ChatPanel {
     if (!raw) return null;
     const ref = parseFileRef(raw);
     if (!ref) return null;
-    const deps = { workspaceRoot: this.workspaceRoot, exists: (p: string) => existsSync(p) };
+    const deps = { workspaceRoot: this.workspaceRoot, exists: (p: string) => this.fileExists(p) };
     if (resolveInWorkspace(ref.path, deps) === null) return null;
     return { path: ref.path, ...(ref.line === undefined ? {} : { line: ref.line }) };
   }
@@ -324,19 +494,27 @@ export class ChatPanel {
   private render(text: string): Block[] {
     return decorateFileRefs(parseMarkdown(text), {
       workspaceRoot: this.workspaceRoot,
-      exists: (p) => existsSync(p),
+      exists: (p: string) => this.fileExists(p),
     });
   }
 
   private async onMessage(msg: PanelInbound): Promise<void> {
     switch (msg.type) {
-      case 'ready':
+      case 'ready': {
         // The webview persists { sessionId } so a reload can rebind this same session.
-        void this.panel.webview.postMessage({ type: 'restoreState', state: { sessionId: this.sessionId } });
+        if (!this.ready) {
+          // Flush everything posted while the page was still loading (history,
+          // notices, early stream chunks): those posts are dropped by VS Code.
+          this.ready = true;
+          const pending = this.pendingOutbound.splice(0);
+          for (const m of pending) postSafe(this.panel.webview, m);
+        }
+        postSafe(this.panel.webview, { type: 'restoreState', state: { sessionId: this.sessionId } });
         // Re-scan on open so a skill added since the window started shows up.
         this.skillsCache = null;
         this.pushState();
         break;
+      }
       case 'send':
         await this.send(msg.text);
         break;
@@ -478,17 +656,13 @@ export class ChatPanel {
         if (isThought && !vscode.workspace.getConfiguration('dshAgent').get<boolean>('showThoughts', true)) return;
         const role = isThought ? 'thought' : 'assistant';
         // Thoughts and the answer can share a messageId, so the role is part of the key.
-        const key = `${role}:${chunk.messageId ?? 'anon'}`;
-        const full = (this.streamText.get(key) ?? '') + text;
-        this.streamText.set(key, full);
-        const blocks = this.render(full);
-        this.post({
-          type: 'message',
-          role,
-          messageId: chunk.messageId ?? 'anon',
-          blocks,
-          preview: isThought ? previewOf(blocks) : '',
-        });
+        const messageId = chunk.messageId ?? 'anon';
+        const key = `${role}:${messageId}`;
+        // Accumulate immediately (deltas must never be lost), but defer parsing and
+        // posting: consecutive chunks coalesce into one render cycle per message.
+        this.streamText.set(key, (this.streamText.get(key) ?? '') + text);
+        this.streamDirty.set(key, { role, messageId });
+        this.scheduleStreamFlush();
         return;
       }
       case 'tool_call': {
@@ -513,7 +687,7 @@ export class ChatPanel {
           id: t.toolCallId,
           title: this.toolTitles.get(t.toolCallId) ?? 'tool',
           status: t.status ?? 'completed',
-          detail: flattenToolContent(t.content).replace(/\s+/g, ' ').trim().slice(0, 120),
+          detail: flattenToolContent(t.content),
         });
         return;
       }
@@ -586,24 +760,48 @@ export class ChatPanel {
   /** Sends one prompt and drives the busy state around the turn. */
   async send(text: string): Promise<void> {
     if (typeof text !== 'string' || text.trim() === '') return;
+    // A tab created by "+" carries a placeholder label until its first message
+    // names it. dsh derives the title from the first prompt and writes it to the
+    // log, but naming the tab right here — from the same text, no disk round-trip —
+    // is instant and cannot race that write. The log-based refresh after the turn
+    // then re-reads the same title and is a no-op.
+    if (this.panel.title === NEW_SESSION_TITLE) {
+      const oneLine = text.replace(/\s+/g, ' ').trim();
+      if (oneLine !== '') this.setTitle(`DSH · ${oneLine.slice(0, 40)}`);
+    }
     // Rendered as Markdown too: sendSelection wraps the selection in a code fence.
     this.post({ type: 'user', blocks: this.render(text) });
     this.post({
+      // Same shape as pushState, just busy: keep the option dropdowns (model,
+      // reasoning effort) on screen while the turn runs — the webview greys them
+      // out — instead of wiping them, which made them vanish during reasoning.
       type: 'state', busy: true, sessionId: this.sessionId,
-      options: [], skills: this.skillViews(), title: this.panel.title,
+      options: this.connection.configOptions(this.sessionId).map(flattenOption),
+      skills: this.skillViews(), title: this.panel.title,
     });
     ChatPanel.syncBusyContext();
     try {
       const res = await this.connection.prompt(this.sessionId, text);
-      // A finished turn will never extend its messages again; drop the buffers so a
-      // long session does not accumulate every message it ever streamed.
+      // A finished turn will never extend its messages again: flush any chunk still
+      // sitting in the coalescing window, then drop the buffers so a long session
+      // does not accumulate every message it ever streamed.
+      this.flushStream();
       this.streamText.clear();
+      this.toolTitles.clear();
       this.post({ type: 'turnEnd', stopReason: res.stopReason });
       // A session is titled from its first message, so the cached title is now stale.
       ChatPanel.catalog?.invalidate(this.sessionId);
       ChatPanel.changeEmitter.fire(); // A title may exist now that a turn completed.
+      void this.refreshTitle();       // …and so may a proper tab label ("DSH · …").
     } catch (err) {
-      this.post({ type: 'notice', text: `Turn failed: ${String(err)}`, tone: 'error' });
+      const message = err instanceof Error ? err.message : String(err);
+      this.post({ type: 'notice', text: `Turn failed: ${message}`, tone: 'error' });
+      // Errors the client detects before the request is written (agent stopped,
+      // session busy) mean the agent never saw this message: give the text back so
+      // the user can retry instead of watching a bubble that was never delivered.
+      if (message.includes('not running') || message.includes('already in flight')) {
+        this.post({ type: 'restoreInput', text });
+      }
     } finally {
       this.pushState();
       ChatPanel.syncBusyContext();
@@ -675,6 +873,8 @@ export class ChatPanel {
     this.disposed = true;
     ChatPanel.open.delete(this.sessionId);
     ChatPanel.syncBusyContext();
+    this.cancelStreamFlush();
+    this.pendingOutbound.length = 0;
     this.unsubscribe?.();
     this.unsubscribe = null;
     for (const d of this.disposables) d.dispose();

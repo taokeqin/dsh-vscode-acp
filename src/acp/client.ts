@@ -29,6 +29,21 @@ export interface AcpClientOptions {
 }
 
 /**
+ * Builds the command line a `.cmd`/`.bat` shim must be run with.
+ *
+ * Windows cannot CreateProcess a batch file directly; the shim goes through
+ * cmd.exe instead. argv is still passed as an array to cmd's `/c` (no user shell,
+ * nothing interpolated), but the single `/c` argument needs cmd quoting: each
+ * token is wrapped in double quotes and embedded quotes doubled — the only
+ * escaping cmd honours inside a quoted token. argv is internally generated (a
+ * flag plus the configured profile), so token content is trusted.
+ */
+export function windowsCommandLine(command: string, args: readonly string[]): string {
+  const q = (s: string): string => `"${s.replace(/"/g, '""')}"`;
+  return [q(command), ...args.map(q)].join(' ');
+}
+
+/**
  * Owns one `dsh --profile acp` child process and the JSON-RPC conversation with it.
  *
  * Events:
@@ -63,13 +78,23 @@ export class AcpClient extends EventEmitter {
   start(): void {
     if (this.child) return;
     this.exited = false;
-    const child = spawn(this.opts.command, this.opts.args, {
+    // A located Windows CLI is usually a `.cmd`/`.bat` npm shim, which CreateProcess
+    // cannot run directly — it must be launched via cmd.exe. argv is still handed to
+    // cmd as an array (`/d /s /c <line>`); no user shell ever sees it.
+    const winShim = process.platform === 'win32' && /\.(cmd|bat)$/i.test(this.opts.command);
+    const command = winShim ? process.env.ComSpec ?? 'cmd.exe' : this.opts.command;
+    const args = winShim
+      ? ['/d', '/s', '/c', windowsCommandLine(this.opts.command, this.opts.args)]
+      : this.opts.args;
+    const child = spawn(command, args, {
       cwd: this.opts.cwd,
       ...(this.opts.env ? { env: this.opts.env } : {}),
       stdio: ['pipe', 'pipe', 'pipe'],
       // No shell: argv is passed as an array so nothing in cwd or config is ever
-      // interpreted by a shell.
+      // interpreted by a shell. The only Windows exception is the batch shim
+      // itself, which runs under cmd.exe with argv still passed as an array.
       shell: false,
+      windowsHide: true,
     }) as ChildProcessWithoutNullStreams;
     this.child = child;
 
@@ -77,10 +102,24 @@ export class AcpClient extends EventEmitter {
     child.stdout.on('data', (chunk: string) => this.consume(chunk));
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => this.opts.log(`[agent stderr] ${chunk.trimEnd()}`));
+    // The stdio streams emit EPIPE/ECONNRESET once the child is gone; without
+    // listeners those 'error' events would be thrown as uncaught exceptions in the
+    // extension host. Writes after death are expected and must simply be ignored.
+    child.stdin.on('error', () => {});
+    child.stdout.on('error', () => {});
+    child.stderr.on('error', () => {});
 
     child.on('error', (err) => {
       this.opts.log(`[agent error] ${err.message}`);
       this.failAll(err);
+      // A failed spawn (ENOENT, EACCES, …) never produces an 'exit' event, so
+      // nothing else would clear the child or wake a stop(). Settle it as if it
+      // had exited: pending calls are already rejected above.
+      if (this.child === child) {
+        this.child = null;
+        this.exited = true;
+        this.emit('exit', null);
+      }
     });
     child.on('exit', (code) => {
       this.exited = true;
@@ -166,7 +205,9 @@ export class AcpClient extends EventEmitter {
   }
 
   private write(frame: unknown): void {
-    this.child?.stdin.write(`${JSON.stringify(frame)}\n`);
+    const child = this.child;
+    if (!child || this.exited) return;
+    child.stdin.write(`${JSON.stringify(frame)}\n`);
   }
 
   private failAll(err: Error): void {

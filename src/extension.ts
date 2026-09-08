@@ -2,6 +2,7 @@
 //
 // Shape: one agent process (AcpConnection) multiplexing N sessions; each session is
 // an editor tab (ChatPanel); the sidebar is a session list (SessionsViewProvider).
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { AcpConnection } from './acp/connection';
 import type { RequestPermissionParams } from './acp/types';
@@ -138,6 +139,18 @@ export function activate(context: vscode.ExtensionContext): void {
       const editor = vscode.window.activeTextEditor;
       if (!editor || editor.selection.isEmpty) {
         void vscode.window.showInformationMessage('DSH: select some code first.');
+        return;
+      }
+      // Every session is bound to the FIRST workspace folder; sending code from a
+      // second folder would silently hand the wrong project to the agent, so refuse
+      // loudly instead. (One agent process = one primary workspace, see resolveRoot.)
+      const root = resolveRoot()!;
+      const docFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+      if (docFolder !== undefined && docFolder.uri.fsPath !== root) {
+        void vscode.window.showWarningMessage(
+          `DSH is bound to the first workspace folder ("${path.basename(root)}"). ` +
+            `Move "${docFolder.name}" to the first position — or open it alone — to discuss its code.`,
+        );
         return;
       }
       const rel = vscode.workspace.asRelativePath(editor.document.uri);

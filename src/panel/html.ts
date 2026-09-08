@@ -46,11 +46,14 @@ export type PanelOutbound =
     }
   /** Text to drop at the caret, e.g. a chosen skill reference. */
   | { type: 'insert'; text: string }
+  /** Refills the composer with a message the agent never received (send failed). */
+  | { type: 'restoreInput'; text: string }
   | { type: 'user'; blocks: Block[] }
   /**
-   * A whole message, re-sent on every streaming chunk. Markdown is parsed in the
-   * host and only this tree crosses the boundary, so the webview never handles an
-   * HTML string built from agent output.
+   * A whole message, re-sent whenever streaming added text (the host coalesces the
+   * deltas into ~40ms render cycles). Markdown is parsed in the host and only this
+   * tree crosses the boundary, so the webview never handles an HTML string built
+   * from agent output.
    */
   | { type: 'message'; role: 'assistant' | 'thought'; messageId: string; blocks: Block[]; preview: string }
   | { type: 'tool'; id: string; title: string; status: string; detail?: string; path?: string; line?: number }
@@ -185,6 +188,12 @@ body {
   padding: 6px 9px; border-radius: 3px;
 }
 .msg.assistant { padding: 0 2px; }
+/* Transient "Working…" row shown in the transcript while a turn has started but
+   no content has arrived yet; the first chunk/tool row replaces it. */
+.msg.assistant.working {
+  display: flex; gap: 8px; align-items: center; opacity: 0.65; font-size: 0.92em;
+}
+.msg.assistant.working .spinner { width: 10px; height: 10px; border-width: 2px; }
 details.thought {
   margin-bottom: 10px; font-size: 0.9em; opacity: 0.62;
   border-left: 2px solid var(--vscode-panel-border); padding-left: 8px;
@@ -292,6 +301,19 @@ details.thought .body { margin-top: 6px; }
 /* Left-aligned, next to the dropdowns. Right-aligned it sat against Send, which
    read as if it belonged to the button. */
 #status { flex: 1; display: flex; justify-content: flex-start; align-items: center; padding-left: 2px; }
+/* Busy indicator: an animated spinner plus how long the turn has been running, so a
+   silent agent (thinking, no chunks yet) still visibly "is working" instead of
+   looking hung. Shown whenever a turn is in flight. */
+#work { display: none; align-items: center; gap: 6px; flex: none;
+  font-size: 0.85em; opacity: 0.75; margin-right: 2px; user-select: none;
+  white-space: nowrap; }
+#work.on { display: flex; }
+.spinner { flex: none; width: 11px; height: 11px; border-radius: 50%;
+  border: 2px solid var(--vscode-panel-border);
+  border-top-color: var(--vscode-foreground);
+  animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#work .when { font-variant-numeric: tabular-nums; }
 /* Context usage: a ring rather than a number, since the exact token count is
    rarely what you want mid-conversation — the hover title carries it. */
 #usage { display: none; cursor: default; }
@@ -325,6 +347,8 @@ const status = document.getElementById('status');
 const opts = document.getElementById('opts');
 const slash = document.getElementById('slash');
 const headTitle = document.getElementById('head-title');
+const work = document.getElementById('work');
+const workWhen = document.getElementById('work-when');
 
 const sessionsMenu = document.getElementById('sessions');
 document.getElementById('btn-new').onclick = () => vscode.postMessage({ type: 'newSession' });
@@ -373,7 +397,11 @@ document.getElementById('btn-sessions').onclick = () => {
 };
 
 let busy = false;
+let prevBusy = false; // last value setBusy saw, to detect turn start/end edges
 let usage = null; // { used, size } once the agent has reported any
+let workSince = 0;  // Date.now() when the current turn started
+let workTimer = null; // 1s interval refreshing the elapsed counter
+let workRow = null; // in-transcript "Working…" placeholder, replaced by content
 // Streaming chunks arrive per messageId; keep the live node so text appends in place.
 const streams = new Map();
 const tools = new Map();
@@ -521,6 +549,8 @@ function makeThought(blocks, preview, extraClass) {
  */
 function renderMessage(role, messageId, blocks, preview) {
   const wasBottom = atBottom();
+  // Real agent content has started: the placeholder "Working…" row is obsolete.
+  replaceWorkRow();
   const key = role + ':' + messageId;
   let entry = streams.get(key);
   if (!entry) {
@@ -544,6 +574,8 @@ function renderMessage(role, messageId, blocks, preview) {
 
 function upsertTool(m) {
   const wasBottom = atBottom();
+  // A tool row is real activity: the placeholder "Working…" row is obsolete.
+  replaceWorkRow();
   let row = tools.get(m.id);
   if (!row) {
     row = document.createElement('div');
@@ -837,13 +869,66 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && sessionsMenu.classList.contains('on')) closeSessions();
 });
 
+/**
+ * Inserts a transient "Working…" assistant row at the bottom of the transcript.
+ * It stands in for the reply while the agent has accepted the prompt but nothing
+ * has streamed yet; the first real chunk/tool row removes it (replaceWorkRow).
+ */
+function showWorkRow() {
+  if (workRow) return;
+  const wasBottom = atBottom();
+  workRow = document.createElement('div');
+  workRow.className = 'msg assistant working';
+  const spin = document.createElement('span');
+  spin.className = 'spinner';
+  const label = document.createElement('span');
+  label.textContent = 'Working…';
+  workRow.append(spin, label);
+  log.append(workRow);
+  scroll(wasBottom);
+}
+
+/** Removes the placeholder once real content arrived (or the turn ended). */
+function replaceWorkRow() {
+  if (!workRow) return;
+  const wasBottom = atBottom();
+  workRow.remove();
+  workRow = null;
+  scroll(wasBottom);
+}
+
 function setBusy(v) {
+  const started = v && !prevBusy;
+  const ended = !v && prevBusy;
+  prevBusy = v;
   busy = v;
   for (const b of opts.querySelectorAll('.combo > button')) b.disabled = v;
   if (v) closeCombo();
   sendBtn.disabled = v;
   stopBtn.hidden = !v;
+  // Elapsed time since the turn started (kept across repeated busy state pushes).
+  if (v) {
+    work.classList.add('on');
+    if (workTimer === null) {
+      workSince = Date.now();
+      workTimer = setInterval(paintWork, 1000);
+    }
+    paintWork();
+    // Show the in-transcript placeholder the moment the turn begins. Note this
+    // runs when the busy state message arrives, which the host posts AFTER the
+    // user bubble, so the row lands in the right place.
+    if (started) showWorkRow();
+  } else {
+    work.classList.remove('on');
+    if (workTimer !== null) { clearInterval(workTimer); workTimer = null; }
+    if (ended) replaceWorkRow();
+  }
   input.placeholder = v ? 'Agent is working…' : 'Ask the agent  (Enter to send, Shift+Enter for a newline)';
+}
+
+function paintWork() {
+  const s = Math.max(0, Math.round((Date.now() - workSince) / 1000));
+  workWhen.textContent = s + 's';
 }
 
 function send() {
@@ -993,6 +1078,17 @@ window.addEventListener('message', (e) => {
       renderStatus();
       break;
     case 'insert': insertAtCaret(String(m.text ?? '')); break;
+    case 'restoreInput':
+      // Put back a message the agent never received. Only when the composer is
+      // still empty — if the user already typed a retry, never clobber it.
+      if (!busy && input.value.trim() === '') {
+        input.value = String(m.text ?? '');
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+        input.dispatchEvent(new Event('input'));
+      }
+      input.focus();
+      break;
     case 'sessionList': renderSessions(m.items); break;
     case 'user':    addUser(m.blocks); break;
     case 'message': renderMessage(m.role === 'thought' ? 'thought' : 'assistant', String(m.messageId), m.blocks, String(m.preview ?? '')); break;
@@ -1008,8 +1104,10 @@ window.addEventListener('message', (e) => {
       break;
     case 'notice': addNotice(String(m.text), m.tone); break;
     case 'turnEnd':
-      // Close every open stream so the next turn starts fresh nodes.
+      // Close every open stream so the next turn starts fresh nodes; a turn that
+      // produced no content (e.g. an empty refusal) should drop the placeholder.
       streams.clear();
+      replaceWorkRow();
       if (m.stopReason && m.stopReason !== 'end_turn') addNotice('Turn ended: ' + m.stopReason, 'info');
       break;
     case 'restoreState':
@@ -1021,6 +1119,7 @@ window.addEventListener('message', (e) => {
       log.replaceChildren();
       streams.clear();
       tools.clear();
+      workRow = null;
       break;
   }
 });
@@ -1077,6 +1176,10 @@ export function chatHtml(nonce: string): string {
   <div id="bar">
     <span id="opts"></span>
     <span id="status"></span>
+    <span id="work" title="The agent is working…">
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="work-when" class="when"></span>
+    </span>
     <button id="stop" class="secondary" hidden>Stop</button>
     <button id="send">Send</button>
   </div>
