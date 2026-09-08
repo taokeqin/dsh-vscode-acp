@@ -32,12 +32,12 @@
   "qna": false,
   "repository": {
     "type": "git",
-    "url": "https://github.com/REPLACE_ME/dsh-vscode-acp.git"
+    "url": "https://github.com/taokeqin/dsh-vscode-acp.git"
   },
   "bugs": {
-    "url": "https://github.com/REPLACE_ME/dsh-vscode-acp/issues"
+    "url": "https://github.com/taokeqin/dsh-vscode-acp/issues"
   },
-  "homepage": "https://github.com/REPLACE_ME/dsh-vscode-acp#readme",
+  "homepage": "https://github.com/taokeqin/dsh-vscode-acp#readme",
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
