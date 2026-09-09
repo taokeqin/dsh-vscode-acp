@@ -1,10 +1,19 @@
 # DSH Agent
 
+[![Marketplace](https://img.shields.io/vscode-marketplace/v/hacken.dsh-agent.svg?label=VS%20Marketplace&color=4D6BFE)](https://marketplace.visualstudio.com/items?itemName=hacken.dsh-agent)
+[![License: MIT](https://img.shields.io/github/license/taokeqin/dsh-vscode-acp.svg)](https://github.com/taokeqin/dsh-vscode-acp/blob/main/LICENSE)
+[![GitHub](https://img.shields.io/badge/source-github.com%2Ftaokeqin%2Fdsh--vscode--acp-181717?logo=github&logoColor=white)](https://github.com/taokeqin/dsh-vscode-acp)
+
 Chat with the [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)
 (`dsh`) coding agent inside VS Code, over ACP — the Agent Client Protocol.
 
 > **Unofficial.** Not affiliated with, endorsed by, or supported by DeepSeek.
 > `dsh` and DeepSeek Harness are their names, not this project's.
+
+**Open source (MIT):** the source lives at
+[github.com/taokeqin/dsh-vscode-acp](https://github.com/taokeqin/dsh-vscode-acp).
+Please report bugs and request features in the
+[issue tracker](https://github.com/taokeqin/dsh-vscode-acp/issues).
 
 Sessions are ordinary editor tabs, the transcript renders as Markdown, and the agent
 runs as a child process over stdio — no local web server and no port to secure.
@@ -382,6 +391,34 @@ npm run package      # dsh-agent.vsix
 ```
 
 `src/acp/` imports no `vscode`, so the protocol layer runs headless under `npm test`.
+
+## Releasing
+
+Releases are published by GitHub Actions — no local publish step. The workflow
+`.github/workflows/publish.yml` runs on a `v*` tag push: it checks the tag matches
+the version in `package.json`, packages the `.vsix`, publishes it to the Visual
+Studio Marketplace (and to Open VSX when its token is configured), then attaches
+the `.vsix` to a GitHub Release.
+
+1. Bump `version` in `package.json` and add a matching entry to `CHANGELOG.md`.
+2. Commit and push, then tag and push — the tag must equal the package version:
+
+   ```sh
+   git tag v0.2.1
+   git push origin v0.2.1
+   ```
+
+3. Watch the run under the repository's **Actions** tab.
+
+The run fails loudly if the tag and version disagree or if the Marketplace token
+is missing, so mistakes surface in CI rather than as half-published releases.
+
+Secrets, configured in *Settings → Secrets and variables → Actions*:
+
+| Secret | Required | Purpose |
+|---|---|---|
+| `VSCE_PAT` | yes | Marketplace token for publisher `hacken` — create at [marketplace.visualstudio.com/manage](https://marketplace.visualstudio.com/manage), scope **Marketplace → Manage** |
+| `OVSX_PAT` | no | Also publish to [Open VSX](https://open-vsx.org) (the `hacken` namespace must exist there) |
 
 ## Status
 
