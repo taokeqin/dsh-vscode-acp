@@ -2,7 +2,7 @@
 
 All notable changes to this extension.
 
-## Unreleased
+## 0.3.0
 
 ### Composer
 
