@@ -265,14 +265,18 @@ details.thought .body { margin-top: 6px; }
   font-family: inherit; font-size: inherit;
 }
 #input:focus { outline: 1px solid var(--vscode-focusBorder); }
-#bar { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 0.85em; }
-#opts { display: flex; gap: 4px; flex: none; align-items: center; }
+/* The bar must wrap rather than clip: in a narrow panel the dropdowns, busy
+   spinner, Stop and Send are fixed-width items, and a single overflowing flex
+   line pushes the right-hand ones (the spinner among them) past the viewport
+   edge where they are unreachable. Wrapping lets them drop to a second line. */
+#bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 6px; font-size: 0.85em; }
+#opts { display: flex; gap: 4px; flex: 0 1 auto; min-width: 0; align-items: center; }
 /* Self-drawn combobox rather than a native select element, which renders with the
    OS look inside a webview and sits oddly next to VS Code's flat dropdowns.
    Claude Code's webview reaches the same conclusion: role="combobox" throughout. */
-.combo { position: relative; }
+.combo { position: relative; flex: 0 1 auto; min-width: 0; }
 .combo > button {
-  display: flex; align-items: center; gap: 4px; max-width: 150px;
+  display: flex; align-items: center; gap: 4px; max-width: 150px; min-width: 0;
   padding: 2px 6px; font-family: inherit; font-size: 0.95em; line-height: 1.4;
   color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
   background: var(--vscode-dropdown-background, transparent);
@@ -281,7 +285,7 @@ details.thought .body { margin-top: 6px; }
 }
 .combo > button:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
 .combo > button:disabled { opacity: 0.5; cursor: default; }
-.combo > button .val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo > button .val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .combo > button .caret { flex: none; font-size: 0.7em; opacity: 0.7; }
 .combo-menu {
   display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 4px;
@@ -301,9 +305,12 @@ details.thought .body { margin-top: 6px; }
 /* Left-aligned, next to the dropdowns. Right-aligned it sat against Send, which
    read as if it belonged to the button. */
 #status { flex: 1; display: flex; justify-content: flex-start; align-items: center; padding-left: 2px; }
-/* Busy indicator: an animated spinner plus how long the turn has been running, so a
-   silent agent (thinking, no chunks yet) still visibly "is working" instead of
-   looking hung. Shown whenever a turn is in flight. */
+/* Busy indicator: an animated spinner, a word describing what the agent is doing
+   right now (Thinking…, Editing files…, Running a command… — the ACP events only
+   say which tool/stream is live, so the label is inferred from that), and how long
+   the turn has been running, so a silent agent (thinking, no chunks yet) still
+   visibly "is working" instead of looking hung. Shown whenever a turn is in
+   flight. */
 #work { display: none; align-items: center; gap: 6px; flex: none;
   font-size: 0.85em; opacity: 0.75; margin-right: 2px; user-select: none;
   white-space: nowrap; }
@@ -313,6 +320,7 @@ details.thought .body { margin-top: 6px; }
   border-top-color: var(--vscode-foreground);
   animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+#work .doing { overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
 #work .when { font-variant-numeric: tabular-nums; }
 /* Context usage: a ring rather than a number, since the exact token count is
    rarely what you want mid-conversation — the hover title carries it. */
@@ -348,6 +356,7 @@ const opts = document.getElementById('opts');
 const slash = document.getElementById('slash');
 const headTitle = document.getElementById('head-title');
 const work = document.getElementById('work');
+const workDoing = document.getElementById('work-doing');
 const workWhen = document.getElementById('work-when');
 
 const sessionsMenu = document.getElementById('sessions');
@@ -402,6 +411,11 @@ let usage = null; // { used, size } once the agent has reported any
 let workSince = 0;  // Date.now() when the current turn started
 let workTimer = null; // 1s interval refreshing the elapsed counter
 let workRow = null; // in-transcript "Working…" placeholder, replaced by content
+let workLabel = null; // the label span inside workRow, so its word tracks activity
+// What the agent is doing right now, shown next to the spinner (Claude Code-style).
+// Inferred from the last live event: thought chunks mean thinking, an in-progress
+// tool call means that tool's action, streamed assistant text means writing.
+let activity = 'Working…';
 // Streaming chunks arrive per messageId; keep the live node so text appends in place.
 const streams = new Map();
 const tools = new Map();
@@ -873,16 +887,21 @@ document.addEventListener('keydown', (e) => {
  * Inserts a transient "Working…" assistant row at the bottom of the transcript.
  * It stands in for the reply while the agent has accepted the prompt but nothing
  * has streamed yet; the first real chunk/tool row removes it (replaceWorkRow).
+ * Shown optimistically on send and again when the busy edge arrives; either way it
+ * marks a fresh turn, so the activity word resets here.
  */
 function showWorkRow() {
   if (workRow) return;
   const wasBottom = atBottom();
+  activity = 'Working…';
+  paintActivity();
   workRow = document.createElement('div');
   workRow.className = 'msg assistant working';
   const spin = document.createElement('span');
   spin.className = 'spinner';
   const label = document.createElement('span');
-  label.textContent = 'Working…';
+  label.textContent = activity;
+  workLabel = label;
   workRow.append(spin, label);
   log.append(workRow);
   scroll(wasBottom);
@@ -894,7 +913,44 @@ function replaceWorkRow() {
   const wasBottom = atBottom();
   workRow.remove();
   workRow = null;
+  workLabel = null;
   scroll(wasBottom);
+}
+
+/** Writes the current activity word into the busy pill and the placeholder row. */
+function paintActivity() {
+  workDoing.textContent = activity;
+  if (workLabel) workLabel.textContent = activity;
+}
+
+/** Switches the "what is the agent doing" word (no-op when it is unchanged). */
+function setActivity(text) {
+  if (text === activity) return;
+  activity = text;
+  paintActivity();
+}
+
+/**
+ * A human word for an in-flight tool, from its name. dsh's tool set is small and
+ * stable (bash, read, edit, write, grep, glob, web_search, web_fetch, todo_write…),
+ * so a name test is enough — no title from the agent ever needs to reach the DOM.
+ */
+const TOOL_ACTIVITY = [
+  [/web|fetch|curl|http|url/, 'Searching the web…'],
+  [/image|screenshot|picture/, 'Looking at an image…'],
+  [/todo|plan|goal|task/, 'Planning…'],
+  [/bash|shell|sh\b|command|exec|run|npm|pnpm|yarn|test/, 'Running a command…'],
+  [/edit|patch|apply|replace|modify|sed/, 'Editing files…'],
+  [/write|create|append|mkdir/, 'Writing files…'],
+  [/read/, 'Reading…'],
+  [/grep|search|glob|find|rg\b|lookup|locate/, 'Searching…'],
+  [/agent|subagent|job/, 'Coordinating agents…'],
+  [/skill/, 'Using a skill…'],
+];
+function activityForTool(title) {
+  const t = String(title ?? '').toLowerCase();
+  for (const [re, word] of TOOL_ACTIVITY) if (re.test(t)) return word;
+  return 'Working…';
 }
 
 function setBusy(v) {
@@ -914,9 +970,9 @@ function setBusy(v) {
       workTimer = setInterval(paintWork, 1000);
     }
     paintWork();
-    // Show the in-transcript placeholder the moment the turn begins. Note this
-    // runs when the busy state message arrives, which the host posts AFTER the
-    // user bubble, so the row lands in the right place.
+    // A fresh turn starts at "Working…" (the row's own creation also does this);
+    // later pushes while a turn runs must NOT reset a word already narrowed down
+    // to Thinking… / Editing files… / etc.
     if (started) showWorkRow();
   } else {
     work.classList.remove('on');
@@ -939,6 +995,13 @@ function send() {
   input.value = '';
   input.style.height = 'auto';
   vscode.postMessage({ type: 'send', text });
+  // Show the "Working…" placeholder synchronously, not on the host's busy echo.
+  // The echo travels postMessage → RPC and back, so under a slow reply (or a turn
+  // that started while the page was still loading, where the echo is replayed from
+  // a queue) the placeholder could otherwise arrive and vanish without ever being
+  // painted. Here it is in the DOM before send() returns; real content, turn end,
+  // or the busy:false that follows a failed send still remove it.
+  showWorkRow();
 }
 
 // —— slash menu ——
@@ -1080,8 +1143,12 @@ window.addEventListener('message', (e) => {
     case 'insert': insertAtCaret(String(m.text ?? '')); break;
     case 'restoreInput':
       // Put back a message the agent never received. Only when the composer is
-      // still empty — if the user already typed a retry, never clobber it.
-      if (!busy && input.value.trim() === '') {
+      // still empty — if the user already typed a retry, never clobber it. busy
+      // is deliberately NOT part of the guard: the host echoes busy before the
+      // failure surfaces, so by the time this arrives the failed send's busy
+      // flag may still be set even though its turn is over — and the text then
+      // belongs back in the composer.
+      if (input.value.trim() === '') {
         input.value = String(m.text ?? '');
         input.style.height = 'auto';
         input.style.height = Math.min(input.scrollHeight, 180) + 'px';
@@ -1091,8 +1158,20 @@ window.addEventListener('message', (e) => {
       break;
     case 'sessionList': renderSessions(m.items); break;
     case 'user':    addUser(m.blocks); break;
-    case 'message': renderMessage(m.role === 'thought' ? 'thought' : 'assistant', String(m.messageId), m.blocks, String(m.preview ?? '')); break;
-    case 'tool':   upsertTool(m); break;
+    case 'message':
+      // What the agent is doing: reasoning streams in as thoughts, the reply as
+      // assistant text. The word matters only while the turn is busy, but it is
+      // cheap and harmless to track regardless (the pill is hidden otherwise).
+      setActivity(m.role === 'thought' ? 'Thinking…' : 'Writing…');
+      renderMessage(m.role === 'thought' ? 'thought' : 'assistant', String(m.messageId), m.blocks, String(m.preview ?? ''));
+      break;
+    case 'tool':
+      // A live tool call names the activity: Running a command… / Editing files… /
+      // Reading… etc. Completed/failed updates leave the word alone — the next
+      // event (another tool, a thought, the reply) re-names it.
+      if (m.status === 'pending' || m.status === 'in_progress') setActivity(activityForTool(m.title));
+      upsertTool(m);
+      break;
     case 'usage':
       if (typeof m.used === 'number' && typeof m.size === 'number' && m.size > 0) {
         usage = { used: m.used, size: m.size };
@@ -1120,6 +1199,7 @@ window.addEventListener('message', (e) => {
       streams.clear();
       tools.clear();
       workRow = null;
+      workLabel = null;
       break;
   }
 });
@@ -1178,6 +1258,7 @@ export function chatHtml(nonce: string): string {
     <span id="status"></span>
     <span id="work" title="The agent is working…">
       <span class="spinner" aria-hidden="true"></span>
+      <span id="work-doing" class="doing">Working…</span>
       <span id="work-when" class="when"></span>
     </span>
     <button id="stop" class="secondary" hidden>Stop</button>

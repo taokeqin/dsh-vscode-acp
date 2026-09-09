@@ -760,6 +760,22 @@ export class ChatPanel {
   /** Sends one prompt and drives the busy state around the turn. */
   async send(text: string): Promise<void> {
     if (typeof text !== 'string' || text.trim() === '') return;
+    // The composer disables Send while its own turn runs, but a command-driven send
+    // (dshAgent.sendSelection, a keybinding) can arrive while this session's turn is
+    // still in flight. Prompting anyway would throw "already in flight" and push a
+    // second round of busy state for the same turn; refuse up front instead, give
+    // the text back, and let the webview snap to the real busy state (the turn that
+    // is actually running keeps its spinner — the indicator must never be cleared
+    // or double-set by a send nobody started).
+    if (this.connection.busy(this.sessionId)) {
+      // The text returns to the composer only when it is empty (a composer send
+      // clears it first); a Send Selection keeps its text selected in the editor.
+      this.post({ type: 'restoreInput', text });
+      this.pushState();
+      this.panel.reveal();
+      this.post({ type: 'notice', text: 'The agent is still working — send again when the current turn finishes.', tone: 'info' });
+      return;
+    }
     // A tab created by "+" carries a placeholder label until its first message
     // names it. dsh derives the title from the first prompt and writes it to the
     // log, but naming the tab right here — from the same text, no disk round-trip —

@@ -2,6 +2,33 @@
 
 All notable changes to this extension.
 
+## Unreleased
+
+### Composer
+
+- The busy indicator is no longer just a spinner and a counter: it now names what
+  the agent is doing as it happens — *Working…*, *Thinking…*, *Running a
+  command…*, *Editing files…*, *Writing files…*, *Reading…*, *Searching…*,
+  *Searching the web…*, *Planning…* — inferred from the live thought stream and
+  the in-flight tool, Claude Code-style. The transcript's transient "Working…"
+  row mirrors the same word while it is shown.
+
+### Fixed
+
+- The "Working…" spinner row could fail to appear (or flash past before ever being
+  painted) when the busy state travelled back slowly — its display depended on the
+  host echoing the busy state at exactly the right moment. The row is now inserted
+  synchronously the instant you send, and removed only by real content, turn end,
+  or the busy:false that follows a failed send.
+- Sending while the agent was still working (e.g. `DSH: Send Selection` during a
+  running turn) used to start a second prompt that failed with "already in flight",
+  pushing a second round of busy state for the same turn. Such a send is now
+  refused up front: your text returns to the input and the running turn keeps its
+  spinner.
+- In a narrow panel the composer toolbar could clip its right-hand items — the
+  busy spinner, Stop and Send — off the visible edge. The toolbar now wraps, and
+  the model/effort dropdowns shrink first instead of pushing the spinner away.
+
 ## 0.2.0
 
 First release intended for the Marketplace.
