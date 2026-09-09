@@ -1,0 +1,82 @@
+name: Publish to Marketplace
+
+# Builds the extension and publishes it to the Visual Studio Marketplace (and,
+# when OVSX_PAT is configured, to Open VSX), then attaches the .vsix to a GitHub
+# Release.
+#
+# Triggered by a version-tag push (v<major.minor.patch>); the tag must match the
+# "version" in package.json, enforced below. workflow_dispatch lets you re-run
+# the publish of the current package.json version by hand from the Actions tab.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: # manual re-publish of the current package.json version
+
+permissions:
+  contents: write # lets `gh release create` attach the .vsix
+
+jobs:
+  publish:
+    name: Package and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check tag matches package.json version
+        if: github.event_name == 'push'
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' does not match the version in package.json ('$version'). Bump the version, commit, then tag it 'v$version'."
+            exit 1
+          fi
+
+      - name: Package .vsix
+        run: npm run package
+
+      - name: Publish to Visual Studio Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::error::VSCE_PAT is not configured. Create a Marketplace PAT for publisher 'hacken' at https://marketplace.visualstudio.com/manage (scope: Marketplace -> Manage) and store it in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          npx --yes @vscode/vsce publish \
+            --packagePath dsh-agent.vsix \
+            --skip-duplicate \
+            -p "$VSCE_PAT"
+
+      - name: Publish to Open VSX (optional)
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          if [ -n "$OVSX_PAT" ]; then
+            npx --yes ovsx publish dsh-agent.vsix -p "$OVSX_PAT"
+          else
+            echo "OVSX_PAT not set — skipping Open VSX."
+          fi
+
+      - name: Attach .vsix to GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release '$GITHUB_REF_NAME' already exists — skipping."
+          else
+            gh release create "$GITHUB_REF_NAME" dsh-agent.vsix --generate-notes
+          fi
