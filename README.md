@@ -413,7 +413,11 @@ the `.vsix` to a GitHub Release.
 The run fails loudly if the tag and version disagree or if the Marketplace token
 is missing, so mistakes surface in CI rather than as half-published releases.
 
-Secrets, configured in *Settings → Secrets and variables → Actions*:
+Secrets, configured in *Settings → Secrets and variables → Actions*. They must be
+reachable by the publish job, which declares `environment: prod` — so put them
+either in the **Secrets** tab (repository-level, visible to every workflow) or as
+environment secrets on the `prod` environment (scoped, but only to jobs that
+declare it):
 
 | Secret | Required | Purpose |
 |---|---|---|

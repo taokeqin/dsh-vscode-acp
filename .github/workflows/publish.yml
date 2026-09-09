@@ -21,6 +21,9 @@ jobs:
   publish:
     name: Package and publish
     runs-on: ubuntu-latest
+    # VSCE_PAT (and OVSX_PAT) live as environment secrets on the "prod"
+    # environment; a job must declare its environment to receive them.
+    environment: prod
     steps:
       - name: Checkout
         uses: actions/checkout@v4
