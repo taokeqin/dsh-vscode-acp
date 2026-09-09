@@ -2,7 +2,7 @@
   "name": "dsh-agent",
   "displayName": "DSH Agent",
   "description": "Chat with the DeepSeek Harness (dsh) coding agent inside VS Code, over ACP. Unofficial — not affiliated with DeepSeek. Open source (MIT): https://github.com/taokeqin/dsh-vscode-acp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "hacken",
   "license": "MIT",
   "icon": "media/icon.png",
