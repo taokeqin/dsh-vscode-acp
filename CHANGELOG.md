@@ -2,7 +2,7 @@
 
 All notable changes to this extension.
 
-## Unreleased
+## 0.4.0
 
 ### Added
 
@@ -41,7 +41,6 @@ All notable changes to this extension.
   ready but nothing is sent implicitly; the checkbox includes or excludes it. Moving the
   selection updates that file's chip in place instead of piling up a chip per range (the
   old key was the exact `path:line-line`).
-
 - A prompt you sent could appear *below* the transient "Working…" row until the
   first real content arrived: the placeholder is inserted synchronously on send,
   while the echo of your own question comes back over a round trip and landed
