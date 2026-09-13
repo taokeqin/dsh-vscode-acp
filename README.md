@@ -401,12 +401,14 @@ Facts this client depends on, each verified against dsh `0.1.2-rc.1`
 ```sh
 npm install
 npm run compile      # tsc
-npm test             # ACP smoke test against a real agent + transcript parsing
-                     # against every session in ~/.dsh/sessions
+npm run test:unit    # every headless suite: no agent, no credentials
+npm test             # …plus a real ACP handshake and smoke turns (needs dsh)
 npm run package      # dsh-agent.vsix
 ```
 
 `src/acp/` imports no `vscode`, so the protocol layer runs headless under `npm test`.
+Agent-facing notes — where things live, the invariants, and the package/install/release
+commands — live in [`AGENTS.md`](AGENTS.md).
 
 ## Releasing
 
