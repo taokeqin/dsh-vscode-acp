@@ -45,6 +45,14 @@ conversation from any file.
   rebuilt from dsh's own session log.
 - **Markdown transcript** — headings, code, lists, tables, and file references that
   open at the cited line.
+- **Context chips** — type `@` in the composer for an inline workspace file list (the
+  file in your active editor ranks first), or right-click a file in the explorer
+  (**DSH: Add Files to Chat**). Selecting code stages a selection chip for that file
+  automatically, unchecked; the checkbox is the include/exclude switch and `×` removes a
+  chip. There is no toolbar button for either — `@` and the selection are the entry
+  points. The strip is cleared once the message is sent. A file is sent as its `@path`
+  reference and read by the agent; a checked selection is sent verbatim (see Known
+  limits).
 - **Skills** — type `/` at the start of a line for the skill catalog.
 - **Model and reasoning effort** — per session, in the composer, alongside a context
   usage ring.
@@ -59,6 +67,8 @@ conversation from any file.
 | `DSH: Refresh Sessions` |
 | `DSH: Cancel Current Turn` |
 | `DSH: Send Selection to Agent` |
+| `DSH: Add Selection to Chat` |
+| `DSH: Add Files to Chat` |
 | `DSH: Select Model` |
 | `DSH: Show Logs` |
 | `DSH: Restart Agent Process` |
@@ -83,6 +93,12 @@ conversation from any file.
   plugin-registered handlers rather than prompt templates, so there is no client-side
   equivalent. Skills work because they are files.
 - **No images, MCP mounts, plans or todos** over ACP. See the notes below.
+- **Files are referenced, not inlined.** dsh advertises
+  `promptCapabilities.embeddedContext: false` and rejects an embedded `resource` block,
+  so a file chip becomes the harness's own `@path` mention — the file on disk stays the
+  single source of truth, and the agent reads as much of it as it needs. Selected text
+  is the exception: it is sent verbatim as a fenced `path:line-line` block, because the
+  user pointed at that exact text and it cannot be re-derived from a path.
 - **The agent writes files without asking.** The shipped `acp` profile auto-approves
   tool use; see Security notes.
 - **Windows is untested.** The code paths exist and are covered by simulated tests,
@@ -427,7 +443,7 @@ declare it):
 ## Status
 
 Working slice: chat, streaming, tool rows, session resume/switch, transcript
-replay, model picker, cancel, send-selection.
+replay, model picker, cancel, send-selection, context-chips (files and selections).
 
 Not done: images, MCP server mounts, prompt queueing, rendering todos/plans from
 the on-disk log.

@@ -69,6 +69,33 @@ console.log('\n3c. the context ring sits with the settings, not against Send');
 check('status area is left-aligned', () =>
   assert.match(html, /#status \{[^}]*justify-content: flex-start/));
 
+console.log('\n3d. files are added from the in-composer @ menu and the explorer');
+// No toolbar buttons: typing '@' is the composer path, the explorer right-click the
+// other, and both funnel into addFilesContext.
+check('there is no Files button in the composer', () => assert.ok(!html.includes('id="add-files"')));
+check('typing @ asks the host for matches', () => assert.match(html, /type: 'fileQuery'/));
+check('the host answers with matches', () => assert.match(html, /case 'fileMatches'/));
+check('picking a match adds a context chip', () => assert.match(html, /type: 'addContextFile'/));
+check('the @ trigger ships in the panel script', () => assert.match(html, /function atTrigger/));
+check('the placeholder points at @', () => assert.match(html, /@ for files/));
+check('explorer offers adding a file', () => {
+  const entry = (menus['explorer/context'] ?? []).find((m) => m.command === 'dshAgent.addFiles');
+  assert.ok(entry, 'no explorer/context entry for dshAgent.addFiles');
+  assert.match(entry.when, /!explorerResourceIsFolder/);
+  assert.match(entry.when, /resourceScheme == 'file'/);
+});
+
+console.log('\n3e. context is a checkbox-driven list — never implicit, never a button');
+check('there is no Selection button in the composer', () => assert.ok(!html.includes('id="add-selection"')));
+check('the editor menu can still toggle the selection', () =>
+  assert.ok((menus['editor/context'] ?? []).some((m) => m.command === 'dshAgent.addSelection')));
+check('chips render in their own strip', () => assert.match(html, /id="context"/));
+check('a chip can be removed', () => assert.match(html, /type: 'removeContext'/));
+check('a chip can be switched off without removing it', () =>
+  assert.match(html, /type: 'toggleContext'/));
+check('every chip carries a checkbox', () =>
+  assert.match(html, /box\.type = 'checkbox'/));
+
 console.log('\n4. commands stay reachable from the palette');
 const declared = new Set(pkg.contributes.commands.map((c) => c.command));
 for (const cmd of PANEL_ACTIONS) {
@@ -78,6 +105,8 @@ check('all menu commands are declared', () => {
   const missing = Object.values(menus).flat().map((m) => m.command).filter((c) => !declared.has(c));
   assert.deepEqual(missing, []);
 });
+check('the add-files command is declared', () => assert.ok(declared.has('dshAgent.addFiles')));
+check('the add-selection command is declared', () => assert.ok(declared.has('dshAgent.addSelection')));
 check('the sidebar view keeps its own actions', () =>
   assert.ok(menus['view/title'].length > 0));
 

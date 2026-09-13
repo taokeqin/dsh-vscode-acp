@@ -8,6 +8,8 @@ import { AcpConnection } from './acp/connection';
 import type { RequestPermissionParams } from './acp/types';
 import { ChatPanel, CHAT_VIEW_TYPE } from './panel/chatPanel';
 import { SessionsViewProvider } from './panel/sessionsView';
+import { pickWorkspaceFiles, relativeWorkspacePath } from './filePicker';
+import { selectionText } from './context';
 import { SessionCatalog } from './sessionCatalog';
 
 let connection: AcpConnection | null = null;
@@ -82,13 +84,137 @@ export function activate(context: vscode.ExtensionContext): void {
     await fn();
   };
 
-  /** The tab the user is looking at, if any. */
+  /**
+   * The tab the user is looking at: the focused one, else a visible one. The fallback
+   * matters for context-menu commands — the explorer has focus, so the session tab is
+   * visible but not active, and keying off `active` alone started a fresh session.
+   */
   const activePanel = (): ChatPanel | undefined => {
-    const id = ChatPanel.activeSessionId();
+    const id = ChatPanel.activeSessionId() ?? ChatPanel.visibleSessionId();
     return id === null ? undefined : ChatPanel.get(id);
   };
 
+  /** The visible session tab, or a fresh one when every tab is closed. */
+  const ensurePanel = async (): Promise<ChatPanel | undefined> => {
+    let panel = activePanel();
+    if (!panel) {
+      await sessions!.newSession();
+      const id = ChatPanel.activeSessionId();
+      panel = id === null ? undefined : ChatPanel.get(id);
+    }
+    return panel;
+  };
+
+  /** File URIs from a command argument: a single Uri or the explorer's multi-select array. */
+  const asUris = (arg: unknown): vscode.Uri[] => {
+    const list = Array.isArray(arg) ? arg : [arg];
+    return list.filter((v): v is vscode.Uri => v instanceof vscode.Uri);
+  };
+
+  /**
+   * The last real text editor. The composer moves focus into a webview, where
+   * `window.activeTextEditor` is undefined, so commands driven from the composer
+   * (Selection) must fall back to this. The file is remembered too, so the `@` menu can
+   * rank the file the user was looking at first.
+   */
+  let lastTextEditor = vscode.window.activeTextEditor;
+  const noteActive = (editor: vscode.TextEditor | undefined): void => {
+    if (!editor) return;
+    lastTextEditor = editor;
+    const root = resolveRoot();
+    ChatPanel.noteActiveFile(
+      root === null || editor.document.uri.scheme !== 'file'
+        ? null
+        : relativeWorkspacePath(root, editor.document.uri.fsPath),
+    );
+  };
+  noteActive(lastTextEditor);
+
+  /**
+   * The active editor's selection as a workspace-relative descriptor, or null when
+   * there is nothing selected (or it sits in a second workspace folder, which
+   * sessions cannot reach). Shared by Send Selection and Add Selection.
+   */
+  const readSelection = (): { path: string; line: number; endLine: number; lang: string; text: string } | null => {
+    const editor = vscode.window.activeTextEditor ?? lastTextEditor;
+    if (!editor || editor.selection.isEmpty) {
+      void vscode.window.showInformationMessage('DSH: select some code first.');
+      return null;
+    }
+    // Every session is bound to the FIRST workspace folder; sending code from a
+    // second folder would silently hand the wrong project to the agent, so refuse
+    // loudly instead. (One agent process = one primary workspace, see resolveRoot.)
+    const root = resolveRoot()!;
+    const docFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+    if (docFolder !== undefined && docFolder.uri.fsPath !== root) {
+      void vscode.window.showWarningMessage(
+        `DSH is bound to the first workspace folder ("${path.basename(root)}"). ` +
+          `Move "${docFolder.name}" to the first position — or open it alone — to discuss its code.`,
+      );
+      return null;
+    }
+    return {
+      path: vscode.workspace.asRelativePath(editor.document.uri),
+      line: editor.selection.start.line + 1,
+      endLine: editor.selection.end.line + 1,
+      lang: editor.document.languageId,
+      text: editor.document.getText(editor.selection),
+    };
+  };
+
+  /**
+   * Stages the editor's current selection into an open session, unchecked.
+   *
+   * The checkbox is the include switch, so selecting code never silently sends it —
+   * but you also do not have to click anything to stage the range you are looking at.
+   * Never opens a session: with no session on screen this is a no-op.
+   */
+  const stageSelection = (editor: vscode.TextEditor | undefined): void => {
+    if (!editor || editor.selection.isEmpty || editor.document.uri.scheme !== 'file') return;
+    const root = resolveRoot();
+    if (root === null) return;
+    const docFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+    if (docFolder !== undefined && docFolder.uri.fsPath !== root) return;
+    const panel = activePanel();
+    if (!panel) return;
+    panel.addSelectionContext(
+      {
+        kind: 'selection',
+        enabled: false,
+        path: vscode.workspace.asRelativePath(editor.document.uri),
+        line: editor.selection.start.line + 1,
+        endLine: editor.selection.end.line + 1,
+        lang: editor.document.languageId,
+        text: editor.document.getText(editor.selection),
+      },
+      false,
+    );
+  };
+
+  // A drag fires a selection change per pixel; only the settled range matters.
+  let selectionTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleStage = (editor: vscode.TextEditor | undefined): void => {
+    if (selectionTimer !== undefined) clearTimeout(selectionTimer);
+    selectionTimer = setTimeout(() => {
+      selectionTimer = undefined;
+      stageSelection(editor);
+    }, 250);
+  };
+
   context.subscriptions.push(
+    // Keep the last real text editor (and its file) current for composer-driven commands.
+    vscode.window.onDidChangeActiveTextEditor(noteActive),
+    // Stage a selection as an unchecked chip; the checkbox decides whether it is sent.
+    vscode.window.onDidChangeTextEditorSelection((e) => scheduleStage(e.textEditor)),
+    { dispose: () => { if (selectionTimer !== undefined) clearTimeout(selectionTimer); } },
+    // A closed document must not be read from later: the remembered editor would throw
+    // on `document.getText`. Drop it, and the `@` menu's active-file hint with it.
+    vscode.workspace.onDidCloseTextDocument((doc) => {
+      if (lastTextEditor !== undefined && lastTextEditor.document === doc) {
+        lastTextEditor = undefined;
+        ChatPanel.noteActiveFile(null);
+      }
+    }),
     // The list is declared only in the secondary (right) sidebar, so the left rail
     // stays free for file navigation. VS Code lets a view be dragged between
     // sidebars natively, which is why no setting is needed to move it.
@@ -135,38 +261,59 @@ export function activate(context: vscode.ExtensionContext): void {
       const id = ChatPanel.activeSessionId();
       if (id !== null) connection?.cancel(id);
     }),
+    // Attaches files to the next message as context chips (`@path` mentions at send
+    // time). Two callers: the composer Files button (passing its session id) and the
+    // explorer context menu (passing the selected file URIs). Without URIs it shows
+    // the workspace file list to pick from.
+    vscode.commands.registerCommand('dshAgent.addFiles', async (arg?: unknown, selected?: unknown) => {
+      const root = resolveRoot();
+      if (root === null) {
+        void vscode.window.showWarningMessage('DSH: open a folder before using the agent.');
+        return;
+      }
+      const fromSelection = asUris(selected);
+      const uris = fromSelection.length > 0 ? fromSelection : asUris(arg);
+      let panel = typeof arg === 'string' ? ChatPanel.get(arg) : activePanel();
+      const rels = uris.length > 0
+        ? uris
+            .map((uri) => (uri.scheme === 'file' ? relativeWorkspacePath(root, uri.fsPath) : null))
+            .filter((rel): rel is string => rel !== null)
+        : await pickWorkspaceFiles(root);
+      if (rels.length === 0) {
+        // A right-click in a second workspace folder maps to nothing: sessions are
+        // bound to the first folder, so say why instead of doing nothing silently.
+        if (uris.length > 0) {
+          void vscode.window.showWarningMessage(
+            `DSH is bound to the first workspace folder ("${path.basename(root)}"); those files are outside it.`,
+          );
+        }
+        return;
+      }
+      panel ??= await ensurePanel();
+      panel?.reveal();
+      panel?.addFilesContext(rels);
+    }),
+    // Includes the current selection in the next message, or drops it back out when it
+    // is already on — the Selection button is a switch, not an add-only action.
+    vscode.commands.registerCommand('dshAgent.addSelection', async (arg?: unknown) => {
+      if (resolveRoot() === null) {
+        void vscode.window.showWarningMessage('DSH: open a folder before using the agent.');
+        return;
+      }
+      const sel = readSelection();
+      if (!sel) return;
+      let panel = typeof arg === 'string' ? ChatPanel.get(arg) : activePanel();
+      panel ??= await ensurePanel();
+      panel?.reveal();
+      panel?.toggleSelectionContext({ kind: 'selection', enabled: true, ...sel });
+    }),
     vscode.commands.registerCommand('dshAgent.sendSelection', requireRoot(async () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.selection.isEmpty) {
-        void vscode.window.showInformationMessage('DSH: select some code first.');
-        return;
-      }
-      // Every session is bound to the FIRST workspace folder; sending code from a
-      // second folder would silently hand the wrong project to the agent, so refuse
-      // loudly instead. (One agent process = one primary workspace, see resolveRoot.)
-      const root = resolveRoot()!;
-      const docFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
-      if (docFolder !== undefined && docFolder.uri.fsPath !== root) {
-        void vscode.window.showWarningMessage(
-          `DSH is bound to the first workspace folder ("${path.basename(root)}"). ` +
-            `Move "${docFolder.name}" to the first position — or open it alone — to discuss its code.`,
-        );
-        return;
-      }
-      const rel = vscode.workspace.asRelativePath(editor.document.uri);
-      const start = editor.selection.start.line + 1;
-      const end = editor.selection.end.line + 1;
-      const body = editor.document.getText(editor.selection);
+      const sel = readSelection();
+      if (!sel) return;
       // ACP advertises embeddedContext: false, so context travels as plain text.
-      const text = `${rel}:${start}-${end}\n\n\`\`\`${editor.document.languageId}\n${body}\n\`\`\`\n`;
+      const text = selectionText({ kind: 'selection', enabled: true, ...sel });
 
-      let panel = activePanel();
-      if (!panel) {
-        // No visible session: start one rather than dropping the selection.
-        await sessions!.newSession();
-        const id = ChatPanel.activeSessionId();
-        panel = id === null ? undefined : ChatPanel.get(id);
-      }
+      const panel = await ensurePanel();
       if (!panel) return;
       panel.reveal();
       await panel.send(text);

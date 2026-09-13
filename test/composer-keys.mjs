@@ -71,5 +71,19 @@ check('only one menu can be open', () => assert.match(html, /openCombo/));
 check('controls disable while a turn runs', () =>
   assert.match(html, /\.combo > button['"]\)\)\s*b\.disabled|b\.disabled = /));
 
+console.log('\n6. sending keeps the question above the "Working…" reply placeholder');
+// send() inserts the optimistic "Working…" row synchronously; the host then echoes
+// the prompt back as a 'user' message over a round trip. If addUser merely
+// appended, the question would land BELOW the placeholder and the transcript would
+// read "Working… / my question" until the first real chunk arrived. The echo must
+// be inserted before the placeholder (question-then-working), with plain append as
+// the fallback for messages that arrive with no turn in flight.
+check('the echoed question is inserted above the pending Working row', () => {
+  const m = /function addUser\(blocks\) \{([\s\S]*?)\n\}\n/.exec(html);
+  assert.ok(m, 'addUser body not found in the panel script');
+  assert.match(m[1], /workRow\) log\.insertBefore\(el, workRow\)/);
+  assert.match(m[1], /else log\.append\(el\)/);
+});
+
 console.log(failures === 0 ? '\nALL PASS\n' : `\n${failures} FAILED\n`);
 process.exit(failures === 0 ? 0 : 1);

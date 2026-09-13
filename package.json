@@ -119,6 +119,16 @@
       {
         "command": "dshAgent.openSession",
         "title": "DSH: Open Session"
+      },
+      {
+        "command": "dshAgent.addFiles",
+        "title": "DSH: Add Files to Chat",
+        "icon": "$(files)"
+      },
+      {
+        "command": "dshAgent.addSelection",
+        "title": "DSH: Add Selection to Chat",
+        "icon": "$(selection)"
       }
     ],
     "menus": {
@@ -143,6 +153,18 @@
         {
           "command": "dshAgent.sendSelection",
           "when": "editorHasSelection",
+          "group": "9_dsh"
+        },
+        {
+          "command": "dshAgent.addSelection",
+          "when": "editorHasSelection",
+          "group": "9_dsh"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "dshAgent.addFiles",
+          "when": "!explorerResourceIsFolder && resourceScheme == 'file'",
           "group": "9_dsh"
         }
       ],
@@ -213,7 +235,8 @@
     "watch": "tsc -w -p ./",
     "typecheck": "tsc --noEmit -p ./",
     "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies -o dsh-agent.vsix",
-    "test": "npm run compile && node test/menus.mjs && node test/locate.mjs && node test/markdown.mjs && node test/file-ref.mjs && node test/file-refs-decorate.mjs && node test/skills.mjs && node test/slash-menu.mjs && node test/composer-keys.mjs && node test/session-order.mjs && node test/panel-column.mjs && node test/acp-client.mjs && node test/gui-launch.mjs && node test/smoke.mjs && node test/history.mjs",
+    "test": "npm run compile && node test/menus.mjs && node test/file-mention.mjs && node test/context.mjs && node test/file-search.mjs && node test/locate.mjs && node test/markdown.mjs && node test/file-ref.mjs && node test/file-refs-decorate.mjs && node test/skills.mjs && node test/slash-menu.mjs && node test/composer-keys.mjs && node test/session-order.mjs && node test/panel-column.mjs && node test/acp-client.mjs && node test/gui-launch.mjs && node test/smoke.mjs && node test/history.mjs",
+    "test:unit": "npm run compile && node test/menus.mjs && node test/file-mention.mjs && node test/context.mjs && node test/file-search.mjs && node test/locate.mjs && node test/markdown.mjs && node test/file-ref.mjs && node test/file-refs-decorate.mjs && node test/skills.mjs && node test/slash-menu.mjs && node test/composer-keys.mjs && node test/session-order.mjs && node test/panel-column.mjs && node test/acp-client.mjs && node test/history.mjs",
     "clean": "node -e \"require('node:fs').rmSync('out',{recursive:true,force:true})\"",
     "vscode:prepublish": "npm run compile"
   },

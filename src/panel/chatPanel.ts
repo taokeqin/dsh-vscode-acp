@@ -16,6 +16,16 @@ import type { SessionCatalog } from '../sessionCatalog';
 import { dshHome } from '../dshHome';
 import { decorateFileRefs, resolveInWorkspace } from '../decorateFileRefs';
 import { parseFileRef } from '../fileRef';
+import { formatFileMention } from '../fileMention';
+import { listWorkspaceFiles } from '../filePicker';
+import { rankFiles } from '../fileSearch';
+import {
+  contextKey,
+  contextLabel,
+  withContext,
+  type ContextItem,
+  type SelectionContext,
+} from '../context';
 import { pickSessionColumn } from '../panelColumn';
 import { chatHtml, type ConfigOptionView, type PanelInbound, type PanelOutbound, type SkillView } from './html';
 
@@ -152,6 +162,19 @@ export class ChatPanel {
     ChatPanel.catalog = catalog;
   }
 
+  /**
+   * Workspace-relative path of the file in the last active text editor.
+   *
+   * Tracked by the extension rather than read here: when the composer has focus the
+   * active editor is the webview, so `window.activeTextEditor` is undefined. The `@`
+   * menu uses this to put the file you are looking at first.
+   */
+  private static activeFilePath: string | null = null;
+
+  static noteActiveFile(relPath: string | null): void {
+    ChatPanel.activeFilePath = relPath;
+  }
+
   /** Notified whenever the set of open panels or the active one changes. */
   private static readonly changeEmitter = new vscode.EventEmitter<void>();
   static readonly onDidChangeOpen = ChatPanel.changeEmitter.event;
@@ -182,6 +205,14 @@ export class ChatPanel {
   private ready = false;
   /** Outbound messages produced while the page was still loading. */
   private readonly pendingOutbound: PanelOutbound[] = [];
+  /**
+   * Context chips attached to the next send. Host-owned so every entry point — the
+   * composer buttons and the explorer/editor commands — feeds one list, and so the
+   * prompt is serialized in TypeScript rather than in the webview.
+   */
+  private contexts: ContextItem[] = [];
+  /** Cached workspace paths backing the `@` menu; loaded once per panel. */
+  private fileIndex: string[] | null = null;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
@@ -233,6 +264,17 @@ export class ChatPanel {
   /** The session whose tab is currently visible, if any. */
   static activeSessionId(): string | null {
     for (const [id, p] of ChatPanel.open) if (p.panel.active) return id;
+    return null;
+  }
+
+  /**
+   * The session whose tab is visible even though focus is elsewhere (the explorer, the
+   * sidebar). Commands invoked from a context menu need this: keying off `active`
+   * alone treated “a session is on screen but not focused” as “no session”, and
+   * started a fresh one instead of adding to the one the user was working in.
+   */
+  static visibleSessionId(): string | null {
+    for (const [id, p] of ChatPanel.open) if (p.panel.visible) return id;
     return null;
   }
 
@@ -513,6 +555,7 @@ export class ChatPanel {
         // Re-scan on open so a skill added since the window started shows up.
         this.skillsCache = null;
         this.pushState();
+        this.pushContexts();
         break;
       }
       case 'send':
@@ -520,6 +563,20 @@ export class ChatPanel {
         break;
       case 'cancel':
         this.connection.cancel(this.sessionId);
+        break;
+      case 'fileQuery':
+        await this.answerFileQuery(msg.query);
+        break;
+      case 'addContextFile':
+        // The '@' menu picked a path; it becomes a chip (the typed token was already
+        // removed webview-side). Validation lives in addFilesContext.
+        if (typeof msg.path === 'string' && msg.path !== '') this.addFilesContext([msg.path]);
+        break;
+      case 'removeContext':
+        this.removeContext(msg.id);
+        break;
+      case 'toggleContext':
+        this.setContextEnabled(msg.id, msg.enabled === true);
         break;
       case 'openPath':
         await this.openPath(msg.path, msg.line, msg.endLine);
@@ -757,6 +814,110 @@ export class ChatPanel {
     });
   }
 
+  /**
+   * Writes the picked files into the context strip.
+   *
+   * Nothing is attached implicitly: a file is here only because the user picked it,
+   * and each chip can be switched off or removed again. ACP carries no file content
+   * (dsh advertises `embeddedContext: false`), so at send time a file becomes the
+   * harness's own `@path` mention — the agent reads it with its own tool.
+   */
+  addFilesContext(relPaths: string[]): void {
+    let changed = false;
+    for (const rel of relPaths) {
+      if (formatFileMention(rel) === null) continue; // not representable as a mention
+      const item: ContextItem = { kind: 'file', path: rel, enabled: true };
+      if (this.contexts.some((c) => contextKey(c) === contextKey(item))) continue;
+      this.contexts.push(item);
+      changed = true;
+    }
+    if (changed) this.pushContexts();
+  }
+
+  /**
+   * Stages the editor's current selection as a chip.
+   *
+   * One per file: moving the selection updates that chip, keeping the user's include
+   * choice, rather than stacking a chip per range. `enabled` applies only when the chip
+   * is created, so auto-staging it unchecked does not re-check what the user turned off.
+   */
+  addSelectionContext(sel: SelectionContext, enabled = true): void {
+    const key = contextKey(sel);
+    const existing = this.contexts.find(
+      (c): c is SelectionContext => c.kind === 'selection' && contextKey(c) === key,
+    );
+    if (existing === undefined) {
+      this.contexts.push({ ...sel, enabled });
+    } else {
+      existing.line = sel.line;
+      existing.endLine = sel.endLine;
+      existing.lang = sel.lang;
+      existing.text = sel.text;
+    }
+    this.pushContexts();
+  }
+
+  /** The Selection button: include the current range, or drop it back out if already on. */
+  toggleSelectionContext(sel: SelectionContext): void {
+    const key = contextKey(sel);
+    const existing = this.contexts.find(
+      (c): c is SelectionContext => c.kind === 'selection' && contextKey(c) === key,
+    );
+    if (existing === undefined) this.contexts.push({ ...sel, enabled: true });
+    else existing.enabled = !existing.enabled;
+    this.pushContexts();
+  }
+
+  private removeContext(id: string): void {
+    const before = this.contexts.length;
+    this.contexts = this.contexts.filter((c) => contextKey(c) !== id);
+    if (this.contexts.length !== before) this.pushContexts();
+  }
+
+  private setContextEnabled(id: string, enabled: boolean): void {
+    let changed = false;
+    for (const c of this.contexts) {
+      if (contextKey(c) === id && c.enabled !== enabled) {
+        c.enabled = enabled;
+        changed = true;
+      }
+    }
+    if (changed) this.pushContexts();
+  }
+
+  /** Re-sends the whole strip; the webview renders it wholesale and reports intent back. */
+  private pushContexts(): void {
+    this.post({
+      type: 'context',
+      items: this.contexts.map((c) => ({
+        id: contextKey(c),
+        label: contextLabel(c),
+        kind: c.kind,
+        enabled: c.enabled,
+      })),
+    });
+  }
+
+  /**
+   * Answers one `@` query with the best few workspace paths.
+   *
+   * The index is built once and cached, so typing does not re-walk the tree; the reply
+   * carries the query back so the webview can drop a stale one.
+   */
+  private async answerFileQuery(query: string): Promise<void> {
+    if (typeof query !== 'string') return;
+    if (this.fileIndex === null) {
+      try {
+        this.fileIndex = await listWorkspaceFiles(this.workspaceRoot);
+      } catch (err) {
+        this.log(`[files] index failed: ${String(err)}`);
+        this.fileIndex = [];
+      }
+    }
+    const items = rankFiles(this.fileIndex, query, { limit: 50, active: ChatPanel.activeFilePath });
+    this.post({ type: 'fileMatches', query, items });
+  }
+
   /** Sends one prompt and drives the busy state around the turn. */
   async send(text: string): Promise<void> {
     if (typeof text !== 'string' || text.trim() === '') return;
@@ -776,17 +937,28 @@ export class ChatPanel {
       this.post({ type: 'notice', text: 'The agent is still working — send again when the current turn finishes.', tone: 'info' });
       return;
     }
+    // Context belongs to this one message: snapshot it and clear the strip before the
+    // turn starts, so a chip cannot silently ride along on the next send. A prompt
+    // that never reaches the agent restores them in the catch below.
+    const attached = this.contexts;
+    const prompt = withContext(attached, text);
+    if (attached.length > 0) {
+      this.contexts = [];
+      this.pushContexts();
+    }
     // A tab created by "+" carries a placeholder label until its first message
     // names it. dsh derives the title from the first prompt and writes it to the
     // log, but naming the tab right here — from the same text, no disk round-trip —
     // is instant and cannot race that write. The log-based refresh after the turn
-    // then re-reads the same title and is a no-op.
+    // then re-reads the same title and is a no-op. Titled from what was typed, not
+    // from the prepended context, so the tab is not named `@file.ts`.
     if (this.panel.title === NEW_SESSION_TITLE) {
       const oneLine = text.replace(/\s+/g, ' ').trim();
       if (oneLine !== '') this.setTitle(`DSH · ${oneLine.slice(0, 40)}`);
     }
-    // Rendered as Markdown too: sendSelection wraps the selection in a code fence.
-    this.post({ type: 'user', blocks: this.render(text) });
+    // Rendered as Markdown too: sendSelection wraps the selection in a code fence,
+    // and attached context is echoed the way it was sent.
+    this.post({ type: 'user', blocks: this.render(prompt) });
     this.post({
       // Same shape as pushState, just busy: keep the option dropdowns (model,
       // reasoning effort) on screen while the turn runs — the webview greys them
@@ -797,7 +969,7 @@ export class ChatPanel {
     });
     ChatPanel.syncBusyContext();
     try {
-      const res = await this.connection.prompt(this.sessionId, text);
+      const res = await this.connection.prompt(this.sessionId, prompt);
       // A finished turn will never extend its messages again: flush any chunk still
       // sitting in the coalescing window, then drop the buffers so a long session
       // does not accumulate every message it ever streamed.
@@ -817,6 +989,12 @@ export class ChatPanel {
       // the user can retry instead of watching a bubble that was never delivered.
       if (message.includes('not running') || message.includes('already in flight')) {
         this.post({ type: 'restoreInput', text });
+        // The prompt was never delivered, so the context it carried is still pending:
+        // put the chips back instead of silently dropping the user's attachments.
+        if (attached.length > 0) {
+          this.contexts = attached;
+          this.pushContexts();
+        }
       }
     } finally {
       this.pushState();

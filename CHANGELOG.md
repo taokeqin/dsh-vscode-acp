@@ -2,6 +2,53 @@
 
 All notable changes to this extension.
 
+## Unreleased
+
+### Added
+
+- **Type `@` to add a file.** The composer opens an inline file list as you type `@`
+  — filtered by a host-side ranker that puts the file in your active editor first, so
+  `@` then Enter attaches the file you were just looking at. Picking a row adds a
+  context chip and removes the typed `@query`; the popover sits right above the input.
+  There is no Files button: `@` is the composer path, and the explorer's **DSH: Add
+  Files to Chat** stays for a right-click.
+- **Context chips: attach files and selections, and take them off again.** A file in
+  the explorer offers **DSH: Add Files to Chat**, and selected code offers **DSH: Add
+  Selection to Chat**. Selecting code also stages a chip for that file by itself,
+  unchecked. Each attachment is a chip in a strip above the input, with a checkbox to
+  include or skip it and an `×` to remove it — nothing is sent implicitly. The strip is
+  one-shot: it is cleared once the message is sent, and put back if the prompt was never
+  delivered. A file never travels as content: it is sent as dsh's own `@path` reference
+  for the agent's read tool (ACP advertises `embeddedContext: false` and rejects
+  embedded `resource` content), so the file on disk stays the single source of truth. A
+  checked selection is the exception and is inlined as a fenced `path:line-line` block,
+  since it cannot be re-derived from a path.
+
+### Fixed
+
+- **The composer has no Files or Selection buttons.** Files are added by typing `@`;
+  a selection is staged automatically when you select code and included by its checkbox.
+  The **Selection** button was also broken from the composer: clicking it moved focus
+  into the webview, where `window.activeTextEditor` is `undefined`, so it reported
+  "select some code first". The extension now remembers the last real text editor (and
+  drops it when its document closes).
+- **Context-menu commands no longer start a stray session.** With the explorer focused,
+  the session tab is on screen but not *active*, and both **Add Files** and **Add
+  Selection** treated that as "no session" and created a new one. They now fall back to
+  the visible session tab.
+- **A selection is a checkbox-driven switch, not an add-only chip.** Selecting code
+  stages an *unchecked* chip for that file, so the range you are looking at is always
+  ready but nothing is sent implicitly; the checkbox includes or excludes it. Moving the
+  selection updates that file's chip in place instead of piling up a chip per range (the
+  old key was the exact `path:line-line`).
+
+- A prompt you sent could appear *below* the transient "Working…" row until the
+  first real content arrived: the placeholder is inserted synchronously on send,
+  while the echo of your own question comes back over a round trip and landed
+  after it. The echoed question is now placed above the placeholder, so the
+  transcript reads question-then-working — the row no longer floats over the
+  message it is answering.
+
 ## 0.3.0
 
 ### Composer

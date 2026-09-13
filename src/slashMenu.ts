@@ -40,3 +40,28 @@ export function filterSkills<T extends { name: string }>(skills: readonly T[], q
   );
   return [...starts, ...contains];
 }
+
+/** Where an `@` file trigger starts, and what has been typed after it. */
+export interface AtTrigger {
+  query: string;
+  /** Caret offset of the '@' itself, so accepting can delete the typed token. */
+  from: number;
+}
+
+/**
+ * Detects an `@` file trigger at the caret.
+ *
+ * An `@` opens the file menu only at the start of the input or after whitespace, so an
+ * email address or `user@host` cannot pop it. The quoted `@"path with spaces` spelling
+ * is recognised too, matching the grammar dsh itself parses.
+ */
+export function atTrigger(value: string, caret: number): AtTrigger | null {
+  const pos = Math.max(0, Math.min(caret, value.length));
+  const before = value.slice(0, pos);
+  const quoted = /(?:^|\s)@"([^"]*)$/.exec(before);
+  if (quoted) return { query: quoted[1], from: pos - quoted[1].length - 2 };
+  const plain = /(?:^|\s)@([^\s@]*)$/.exec(before);
+  if (!plain) return null;
+  return { query: plain[1], from: pos - plain[1].length - 1 };
+}
+

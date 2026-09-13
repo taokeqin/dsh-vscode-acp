@@ -7,7 +7,7 @@
 
 import type { Block } from '../markdown';
 import { menuHandlesKey, shouldSubmit } from '../composerKeys';
-import { filterSkills, slashTrigger } from '../slashMenu';
+import { atTrigger, filterSkills, slashTrigger } from '../slashMenu';
 
 /** A skill offered by the composer's slash menu. */
 export interface SkillView {
@@ -23,11 +23,25 @@ export interface ConfigOptionView {
   choices: { value: string; label: string }[];
 }
 
+/** One chip in the composer's context strip. */
+export interface ContextItemView {
+  /** Stable identity, echoed back by toggle/remove. */
+  id: string;
+  label: string;
+  kind: 'file' | 'selection';
+  /** Unchecked chips stay attached but are left out of the next send. */
+  enabled: boolean;
+}
+
 /** Messages the webview posts up to the extension host. */
 export type PanelInbound =
   | { type: 'ready' }
   | { type: 'send'; text: string }
   | { type: 'cancel' }
+  | { type: 'fileQuery'; query: string }
+  | { type: 'addContextFile'; path: string }
+  | { type: 'removeContext'; id: string }
+  | { type: 'toggleContext'; id: string; enabled: boolean }
   | { type: 'openPath'; path: string; line?: number; endLine?: number }
   | { type: 'openExternal'; url: string }
   | { type: 'setOption'; id: string; value: string }
@@ -46,6 +60,10 @@ export type PanelOutbound =
     }
   /** Text to drop at the caret, e.g. a chosen skill reference. */
   | { type: 'insert'; text: string }
+  /** The full context strip, re-sent whenever a chip is added, toggled or removed. */
+  | { type: 'context'; items: ContextItemView[] }
+  /** Ranked workspace paths answering one `@` query from the composer. */
+  | { type: 'fileMatches'; query: string; items: string[] }
   /** Refills the composer with a message the agent never received (send failed). */
   | { type: 'restoreInput'; text: string }
   | { type: 'user'; blocks: Block[] }
@@ -258,6 +276,24 @@ details.thought .body { margin-top: 6px; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 #slash .empty { padding: 7px 9px; opacity: 0.6; font-size: 0.9em; }
+/* Context chips: one row per attached file/selection, each with an include checkbox
+   and a remove button. Hidden entirely when nothing is attached. */
+#context { display: none; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+#context.on { display: flex; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+  padding: 1px 3px 1px 6px; border-radius: 10px; font-size: 0.85em;
+  background: var(--vscode-badge-background, rgba(127,127,127,.2));
+  color: var(--vscode-badge-foreground, inherit);
+}
+.chip.off { opacity: 0.5; }
+.chip .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
+.chip input[type="checkbox"] { margin: 0; flex: none; }
+.chip .rm {
+  all: unset; flex: none; cursor: pointer; padding: 0 4px; border-radius: 50%;
+  font-size: 1.1em; line-height: 1;
+}
+.chip .rm:hover { background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,.35)); }
 #input {
   width: 100%; resize: none; min-height: 54px; max-height: 180px; padding: 6px 8px;
   color: var(--vscode-input-foreground); background: var(--vscode-input-background);
@@ -354,6 +390,7 @@ const stopBtn = document.getElementById('stop');
 const status = document.getElementById('status');
 const opts = document.getElementById('opts');
 const slash = document.getElementById('slash');
+const contextEl = document.getElementById('context');
 const headTitle = document.getElementById('head-title');
 const work = document.getElementById('work');
 const workDoing = document.getElementById('work-doing');
@@ -534,7 +571,12 @@ function addUser(blocks) {
   const el = document.createElement('div');
   el.className = 'msg user';
   buildBlocks(blocks, el);
-  log.append(el);
+  // send() shows the optimistic "Working…" row BEFORE the host echoes this prompt
+  // back. The question belongs above that placeholder (it stands for the reply, so
+  // the transcript must read question-then-working, never the reverse); without
+  // this the row floats over the question until the first chunk replaces it.
+  if (workRow) log.insertBefore(el, workRow);
+  else log.append(el);
   scroll(wasBottom);
 }
 
@@ -979,7 +1021,7 @@ function setBusy(v) {
     if (workTimer !== null) { clearInterval(workTimer); workTimer = null; }
     if (ended) replaceWorkRow();
   }
-  input.placeholder = v ? 'Agent is working…' : 'Ask the agent  (Enter to send, Shift+Enter for a newline)';
+  input.placeholder = v ? 'Agent is working…' : 'Ask the agent  (Enter to send, Shift+Enter for a newline, @ for files)';
 }
 
 function paintWork() {
@@ -1004,42 +1046,54 @@ function send() {
   showWorkRow();
 }
 
-// —— slash menu ——
-// Typing '/' at the start of a line opens the skill list inline. A quick pick was
-// tried first and felt too far from the composer: choosing a skill is part of
-// writing the message, not a separate errand.
+// —— composer menu: '/' for skills, '@' for files ——
+// Typing '/' at the start of a line opens the skill list; typing '@' opens the
+// workspace file list. Both render in the same popover right above the input, so the
+// choice stays part of writing the message instead of a detour through a dialog.
 let skills = [];
-let slashItems = [];
-let slashIndex = 0;
-let slashFrom = -1; // caret offset of the '/' that opened the menu
+let menuKind = 'skill'; // 'skill' | 'file'
+let menuItems = [];     // skill objects, or workspace-relative paths
+let menuIndex = 0;
+let menuFrom = -1;      // caret offset of the '/' or '@' that opened the menu
+let fileMatches = [];   // the last matches the host sent
+let askedQuery = null;  // the '@' query those matches answer; null once answered
 
 function closeSlash() {
   slash.classList.remove('on');
-  slashItems = [];
-  slashFrom = -1;
+  menuItems = [];
+  menuFrom = -1;
+  askedQuery = null;
 }
 
 /*__SLASH_LOGIC__*/
 
 function renderSlash() {
   slash.replaceChildren();
-  if (slashItems.length === 0) {
+  if (menuItems.length === 0) {
     const e = document.createElement('div');
     e.className = 'empty';
-    e.textContent = 'No matching skill';
+    e.textContent = menuKind === 'file'
+      ? (askedQuery === null ? 'No matching file' : 'Searching…')
+      : 'No matching skill';
     slash.append(e);
     return;
   }
-  slashItems.forEach((s, i) => {
+  menuItems.forEach((item, i) => {
     const row = document.createElement('div');
-    row.className = 'item' + (i === slashIndex ? ' sel' : '');
+    row.className = 'item' + (i === menuIndex ? ' sel' : '');
     row.setAttribute('role', 'option');
     const n = document.createElement('span');
     n.className = 'n';
-    n.textContent = '/' + s.name;
     const d = document.createElement('span');
     d.className = 'd';
-    d.textContent = s.description;
+    if (menuKind === 'file') {
+      const at = String(item).lastIndexOf('/');
+      n.textContent = at === -1 ? String(item) : String(item).slice(at + 1);
+      d.textContent = at === -1 ? '' : String(item).slice(0, at);
+    } else {
+      n.textContent = '/' + item.name;
+      d.textContent = item.description;
+    }
     row.append(n, d);
     row.onmousedown = (ev) => { ev.preventDefault(); acceptSlash(i); };
     slash.append(row);
@@ -1049,26 +1103,61 @@ function renderSlash() {
 }
 
 function updateSlash() {
-  if (skills.length === 0) return closeSlash();
-  const hit = slashTrigger(input.value, input.selectionStart ?? 0);
-  if (!hit) return closeSlash();
-  slashItems = filterSkills(skills, hit.query);
-  slashFrom = hit.from;
-  slashIndex = 0;
+  const caret = input.selectionStart ?? 0;
+  const skillHit = slashTrigger(input.value, caret);
+  if (skillHit) {
+    if (skills.length === 0) return closeSlash();
+    menuKind = 'skill';
+    menuFrom = skillHit.from;
+    menuItems = filterSkills(skills, skillHit.query);
+    menuIndex = 0;
+    slash.classList.add('on');
+    renderSlash();
+    return;
+  }
+  const fileHit = atTrigger(input.value, caret);
+  if (!fileHit) return closeSlash();
+  menuKind = 'file';
+  menuFrom = fileHit.from;
+  menuIndex = 0;
+  // Ask the host once per distinct query; the reply carries the query back so a slow
+  // one for an earlier keystroke cannot overwrite the current list.
+  if (askedQuery !== fileHit.query) {
+    askedQuery = fileHit.query;
+    fileMatches = [];
+    vscode.postMessage({ type: 'fileQuery', query: fileHit.query });
+  }
+  menuItems = fileMatches;
   slash.classList.add('on');
   renderSlash();
 }
 
-/** Replaces the '/query' token with a reference the model will act on. */
+/**
+ * Accepts the highlighted row.
+ *
+ * A skill is replaced by a reference the model acts on. A file becomes a context chip
+ * instead: the typed at-query is scaffolding and is deleted, because the chip is what
+ * carries the reference at send time.
+ */
 function acceptSlash(i) {
-  const chosen = slashItems[i];
-  if (!chosen || slashFrom < 0) return closeSlash();
+  const chosen = menuItems[i];
+  if (chosen === undefined || menuFrom < 0) return closeSlash();
   const caret = input.selectionStart ?? 0;
+  const from = menuFrom;
+  if (menuKind === 'file') {
+    input.value = input.value.slice(0, from) + input.value.slice(caret);
+    closeSlash();
+    input.setSelectionRange(from, from);
+    input.focus();
+    vscode.postMessage({ type: 'addContextFile', path: String(chosen) });
+    input.dispatchEvent(new Event('input'));
+    return;
+  }
   // A literal backtick would close the String.raw template this script lives in.
   const tick = String.fromCharCode(96);
   const text = 'Use the ' + tick + chosen.name + tick + ' skill: ';
-  input.value = input.value.slice(0, slashFrom) + text + input.value.slice(caret);
-  const pos = slashFrom + text.length;
+  input.value = input.value.slice(0, from) + text + input.value.slice(caret);
+  const pos = from + text.length;
   closeSlash();
   input.setSelectionRange(pos, pos);
   input.focus();
@@ -1077,13 +1166,55 @@ function acceptSlash(i) {
 
 /** Drops text at the caret and keeps focus in the composer. */
 function insertAtCaret(text) {
+  let t = String(text ?? '');
+  if (t === '') return;
   const start = input.selectionStart ?? input.value.length;
   const end = input.selectionEnd ?? start;
-  input.value = input.value.slice(0, start) + text + input.value.slice(end);
-  const pos = start + text.length;
+  const before = input.value.slice(0, start);
+  const after = input.value.slice(end);
+  // Keep inserted tokens separate: an @mention glued to the previous word
+  // ("see@src/a.ts") is no longer a mention the harness can recognise.
+  if (before !== '' && !/\s$/.test(before) && !/^\s/.test(t)) t = ' ' + t;
+  if (after !== '' && !/^\s/.test(after) && !/\s$/.test(t)) t = t + ' ';
+  input.value = before + t + after;
+  const pos = start + t.length;
   input.setSelectionRange(pos, pos);
   input.focus();
   input.dispatchEvent(new Event('input'));
+}
+
+// —— context strip ——
+// Files and selections attached to the next message. The host owns the list (both the
+// composer buttons and the explorer right-click feed it) and re-sends it on every
+// change; the webview only renders it and reports intent. Nothing is attached
+// implicitly — a chip exists only because the user added it, and each one can be
+// switched off or removed again.
+let contexts = [];
+
+function renderContexts() {
+  contextEl.replaceChildren();
+  contextEl.classList.toggle('on', contexts.length > 0);
+  for (const c of contexts) {
+    const chip = document.createElement('span');
+    chip.className = 'chip' + (c.enabled ? '' : ' off');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = c.enabled !== false;
+    box.title = 'Include this in the next message';
+    box.onchange = () => vscode.postMessage({ type: 'toggleContext', id: c.id, enabled: box.checked });
+    const txt = document.createElement('span');
+    txt.className = 'txt';
+    txt.textContent = c.label;
+    txt.title = c.kind === 'selection' ? 'Selected text — ' + c.label : c.label;
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'rm';
+    rm.textContent = '×';
+    rm.title = 'Remove from context';
+    rm.onclick = () => vscode.postMessage({ type: 'removeContext', id: c.id });
+    chip.append(box, txt, rm);
+    contextEl.append(chip);
+  }
 }
 
 sendBtn.addEventListener('click', send);
@@ -1101,14 +1232,14 @@ input.addEventListener('keydown', (e) => {
   if (slash.classList.contains('on') && menuHandlesKey(ime)) {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
-      if (slashItems.length > 0) {
-        slashIndex = (slashIndex + (e.key === 'ArrowDown' ? 1 : -1) + slashItems.length) % slashItems.length;
+      if (menuItems.length > 0) {
+        menuIndex = (menuIndex + (e.key === 'ArrowDown' ? 1 : -1) + menuItems.length) % menuItems.length;
         renderSlash();
       }
       return;
     }
     if (e.key === 'Enter' || e.key === 'Tab') {
-      if (slashItems.length > 0) { e.preventDefault(); acceptSlash(slashIndex); return; }
+      if (menuItems.length > 0) { e.preventDefault(); acceptSlash(menuIndex); return; }
       closeSlash();
     }
     if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
@@ -1135,12 +1266,30 @@ window.addEventListener('message', (e) => {
     case 'state':
       setBusy(m.busy === true);
       renderOptions(m.options);
-      // Skills are reached by typing '/' at the start of a line; no toolbar button.
+      // Skills are reached by typing '/' at the start of a line, files by '@'; no
+      // toolbar entry is needed for either (the Files button just types the '@').
       skills = Array.isArray(m.skills) ? m.skills : [];
       if (typeof m.title === 'string' && m.title !== '') headTitle.textContent = m.title;
       renderStatus();
       break;
     case 'insert': insertAtCaret(String(m.text ?? '')); break;
+    case 'context':
+      contexts = Array.isArray(m.items) ? m.items : [];
+      renderContexts();
+      break;
+    case 'fileMatches':
+      // Only the answer to the query still being typed matters; a slow reply for an
+      // earlier keystroke is stale and must not replace the list on screen.
+      if (m.query === askedQuery) {
+        askedQuery = null;
+        fileMatches = Array.isArray(m.items) ? m.items : [];
+        if (menuKind === 'file' && slash.classList.contains('on')) {
+          menuItems = fileMatches;
+          menuIndex = 0;
+          renderSlash();
+        }
+      }
+      break;
     case 'restoreInput':
       // Put back a message the agent never received. Only when the composer is
       // still empty — if the user already typed a retry, never clobber it. busy
@@ -1200,6 +1349,8 @@ window.addEventListener('message', (e) => {
       tools.clear();
       workRow = null;
       workLabel = null;
+      contexts = [];
+      renderContexts();
       break;
   }
 });
@@ -1221,6 +1372,7 @@ input.focus();
 function slashLogicSource(): string {
   return [
     slashTrigger.toString(),
+    atTrigger.toString(),
     filterSkills.toString(),
     shouldSubmit.toString(),
     menuHandlesKey.toString(),
@@ -1252,7 +1404,8 @@ export function chatHtml(nonce: string): string {
 <div id="log"></div>
 <div id="composer">
   <div id="slash" role="listbox"></div>
-  <textarea id="input" rows="2" placeholder="Ask the agent  (Enter to send, Shift+Enter for a newline)"></textarea>
+  <div id="context" role="list"></div>
+  <textarea id="input" rows="2" placeholder="Ask the agent  (Enter to send, Shift+Enter for a newline, @ for files)"></textarea>
   <div id="bar">
     <span id="opts"></span>
     <span id="status"></span>

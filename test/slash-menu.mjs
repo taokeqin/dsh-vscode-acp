@@ -2,7 +2,7 @@
 //
 // These functions are injected into the panel script verbatim, so what runs in the
 // webview is what is exercised here.
-import { slashTrigger, filterSkills } from '../out/slashMenu.js';
+import { slashTrigger, filterSkills, atTrigger } from '../out/slashMenu.js';
 import { chatHtml } from '../out/panel/html.js';
 import assert from 'node:assert/strict';
 
@@ -45,10 +45,25 @@ check('the input array is not mutated', () => {
   assert.equal(skills[0].name, 'find-skills');
 });
 
-console.log('\n5. the panel ships these exact functions');
+console.log('\n5. the @ file trigger opens in the same menu');
+const atAt = (s) => atTrigger(s, s.length);
+check('an @ at the start', () => assert.deepEqual(atAt('@'), { query: '', from: 0 }));
+check('with a partial path', () => assert.deepEqual(atAt('@src/pa'), { query: 'src/pa', from: 0 }));
+check('after a space mid-sentence', () => {
+  const v = 'read @panel/ht';
+  assert.deepEqual(atTrigger(v, v.length), { query: 'panel/ht', from: 5 });
+});
+check('an email address does not trigger', () => assert.equal(atAt('me@example.com'), null));
+check('a space after the query closes it', () => assert.equal(atAt('@src/a.ts and'), null));
+check('the quoted spelling reports the inner query', () =>
+  assert.deepEqual(atAt('@"my doc'), { query: 'my doc', from: 0 }));
+check('an out-of-range caret is clamped', () => assert.deepEqual(atTrigger('@ab', 999), { query: 'ab', from: 0 }));
+
+console.log('\n6. the panel ships these exact functions');
 const html = chatHtml('n');
-check('both are injected into the script', () => {
+check('all four are injected into the script', () => {
   assert.ok(html.includes('function slashTrigger'), 'slashTrigger missing');
+  assert.ok(html.includes('function atTrigger'), 'atTrigger missing');
   assert.ok(html.includes('function filterSkills'), 'filterSkills missing');
 });
 check('the placeholder is fully substituted', () => assert.ok(!html.includes('__SLASH_LOGIC__')));
